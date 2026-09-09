@@ -1,0 +1,24 @@
+# 运行时目录（后端以本树为 DSH_LAUNCHER_ROOT 运行时生成）
+config/
+data/
+logs/
+models/
+npm-cache/
+harness/
+runtime/
+llm/
+vendor/
+electron/
+
+# 进程/日志/令牌
+*.pid
+*.token
+*.log
+
+# 测试产物
+test/fixture/
+test/selftest.steps.log
+test/selftest.child.log
+test/selftest.last.log
+test/selftest.stderr.log
+test/copy-test.last.log

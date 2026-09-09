@@ -1,0 +1,262 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DSH 启动器 V3</title>
+<link rel="stylesheet" href="styles.css">
+<script>
+  /* 首帧前应用主题，避免闪烁。localStorage 是即时缓存，页面加载后由配置值修正。 */
+  (function () {
+    try {
+      var t = localStorage.getItem('dsh-theme') || 'dark'
+      if (t === 'system') t = matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark'
+      document.documentElement.setAttribute('data-theme', t)
+    } catch (e) { /* 忽略 */ }
+  })()
+</script>
+</head>
+<body>
+<div id="app">
+  <aside id="sidebar">
+    <div class="brand"><span class="brand-dot"></span>DSH 启动器 V3</div>
+    <nav id="nav">
+      <a href="#home" class="nav-item active" data-page="home">🏠 主页</a>
+      <a href="#models" class="nav-item" data-page="models">📦 模型</a>
+      <a href="#chat" class="nav-item" data-page="chat">💬 模型测试</a>
+      <a href="#settings" class="nav-item" data-page="settings">⚙️ 设置</a>
+      <a href="#maintain" class="nav-item" data-page="maintain">🛠️ 维护</a>
+    </nav>
+    <div class="sidebar-footer">
+      <div class="mini-status" id="mini-status">连接中……</div>
+      <button class="btn btn-ghost btn-sm" id="btn-quit-side">退出启动器</button>
+    </div>
+  </aside>
+
+  <main id="main">
+    <!-- ============ 主页 ============ -->
+    <section id="page-home" class="page active">
+      <div class="page-head">
+        <h1>主页</h1>
+        <div class="page-actions">
+          <button class="btn btn-primary btn-lg" id="btn-start-all">▶ 一键启动</button>
+          <button class="btn btn-danger btn-lg" id="btn-stop-all">⏹ 停止全部</button>
+        </div>
+      </div>
+      <div id="home-notice" class="notice hidden"></div>
+      <div id="home-onboard" class="onboard hidden">
+        <b>开始使用</b> <span class="onboard-steps"></span>
+        <div class="onboard-actions">
+          <button class="btn btn-sm btn-primary" id="btn-onboard-models">去模型页</button>
+          <button class="btn btn-sm" id="btn-onboard-start">一键启动</button>
+        </div>
+      </div>
+      <div class="cards">
+        <div class="card" id="card-llm">
+          <div class="card-head"><span class="card-title">本地大模型</span><span class="badge" id="badge-llm">—</span></div>
+          <div class="card-body">
+            <div class="kv"><span>模型</span><b id="llm-model">—</b></div>
+            <div class="kv"><span>端点</span><b id="llm-endpoint">—</b> <button class="btn btn-ghost btn-xs" id="btn-copy-llm">复制</button></div>
+            <div class="kv"><span>状态</span><b id="llm-health">—</b></div>
+            <div id="llm-restart-progress" class="restart-progress hidden"></div>
+          </div>
+          <div class="card-actions">
+            <button class="btn btn-sm" id="btn-llm-start">启动</button>
+            <button class="btn btn-sm" id="btn-llm-restart">重启</button>
+            <button class="btn btn-sm btn-danger-ghost" id="btn-llm-stop">停止</button>
+          </div>
+        </div>
+        <div class="card" id="card-dsh">
+          <div class="card-head"><span class="card-title">Harness</span><span class="badge" id="badge-dsh">—</span></div>
+          <div class="card-body">
+            <div class="kv"><span>地址</span><b id="dsh-url">—</b></div>
+            <div class="kv"><span>状态</span><b id="dsh-health">—</b></div>
+            <div id="dsh-restart-progress" class="restart-progress hidden"></div>
+          </div>
+          <div class="card-actions">
+            <button class="btn btn-sm btn-primary" id="btn-open-harness">打开 Harness</button>
+            <button class="btn btn-sm" id="btn-dsh-start">启动</button>
+            <button class="btn btn-sm" id="btn-dsh-restart">重启</button>
+            <button class="btn btn-sm btn-danger-ghost" id="btn-dsh-stop">停止</button>
+          </div>
+        </div>
+        <div class="card" id="card-gpu">
+          <div class="card-head"><span class="card-title">GPU</span></div>
+          <div class="card-body">
+            <div class="kv"><span>显卡</span><b id="gpu-name">—</b></div>
+            <div class="kv"><span>驱动</span><b id="gpu-driver">—</b></div>
+            <div class="gpu-meter"><div class="gpu-meter-bar" id="gpu-bar"></div></div>
+            <div class="kv small"><span>空闲 <b id="gpu-free">—</b></span><span>已用 <b id="gpu-used">—</b></span><span>总量 <b id="gpu-total">—</b></span></div>
+          </div>
+        </div>
+      </div>
+      <div class="row2">
+        <div class="card">
+          <div class="card-head"><span class="card-title">组件版本</span></div>
+          <div class="card-body">
+            <div class="kv"><span>启动器</span><b id="ver-launcher">—</b></div>
+            <div class="kv"><span>Harness (dsh)</span><b id="ver-dsh">—</b></div>
+            <div class="kv"><span>llama.cpp</span><b id="ver-llama">—</b></div>
+            <div class="kv"><span>内置 Node</span><b id="ver-node">—</b></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-head"><span class="card-title">磁盘空间</span></div>
+          <div class="card-body">
+            <div class="kv"><span>剩余</span><b id="disk-free">—</b></div>
+            <div class="kv"><span>总量</span><b id="disk-total">—</b></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ 模型 ============ -->
+    <section id="page-models" class="page">
+      <div class="page-head"><h1>模型管理</h1></div>
+      <div class="section-title">已安装模型</div>
+      <div id="installed-list" class="model-grid">加载中……</div>
+      <div class="import-row">
+        <input type="text" id="import-path" placeholder="本地 GGUF 文件完整路径（如 D:\models\xxx.gguf）">
+        <button class="btn btn-sm" id="btn-import">导入本地 GGUF</button>
+      </div>
+      <div class="section-title">模型广场 <label class="checkbox-label"><input type="checkbox" id="hub-allowlist"> 仅白名单仓库</label></div>
+      <div class="hub-search-row">
+        <input type="text" id="hub-query" placeholder="搜索 Hugging Face 模型（如 qwen3-abliterated）" value="abliterated">
+        <button class="btn btn-sm btn-primary" id="btn-hub-search">搜索</button>
+      </div>
+      <div class="hub-history" id="hub-history"></div>
+      <div class="preset-row" id="preset-row"></div>
+      <div id="hub-results" class="hub-list"></div>
+      <div style="margin-top:10px">
+        <button class="btn btn-sm hidden" id="btn-hub-more">加载更多</button>
+      </div>
+      <div id="hub-files" class="hub-files hidden">
+        <div class="section-title"><span id="hub-files-title">仓库文件</span> <button class="btn btn-ghost btn-xs" id="btn-hub-close">关闭</button></div>
+        <div id="hub-model-info" class="hub-model-info"></div>
+        <div class="hub-file-tools">
+          <input type="text" id="hub-file-filter" placeholder="筛选文件名（如 Q4_K_M）">
+          <select id="hub-file-sort">
+            <option value="size-asc">大小 小→大</option>
+            <option value="size-desc">大小 大→小</option>
+            <option value="name">名称</option>
+          </select>
+        </div>
+        <div id="hub-files-list" class="hub-files-list"></div>
+      </div>
+    </section>
+
+    <!-- ============ 模型测试 ============ -->
+    <section id="page-chat" class="page">
+      <div class="page-head"><h1>模型测试</h1></div>
+      <div class="notice">单轮流式对话，用于验证本地模型连通与速度。正式使用请打开 Harness：<button class="btn btn-sm btn-primary" id="btn-open-harness-2">打开 Harness</button></div>
+      <div id="chat-log" class="chat-log"></div>
+      <div id="chat-stats" class="chat-stats"></div>
+      <div class="section-title">模型测试</div>
+      <div class="chat-controls">
+        <label>温度 <input type="number" id="chat-temp" value="0.7" min="0" max="2" step="0.1"></label>
+        <label>最大长度 <input type="number" id="chat-maxtokens" value="2048" min="64" step="64"></label>
+        <button class="btn btn-ghost btn-xs" id="btn-chat-clear">清空对话</button>
+      </div>
+      <div class="chat-input-row">
+        <textarea id="chat-input" rows="3" placeholder="输入消息，Ctrl+Enter 发送……"></textarea>
+        <button class="btn btn-primary" id="btn-chat-send">发送</button>
+      </div>
+    </section>
+
+    <!-- ============ 设置 ============ -->
+    <section id="page-settings" class="page">
+      <div class="page-head"><h1>启动设置</h1></div>
+      <div class="notice">修改保存后即时写入 config\launcher.env；服务参数在下次启动对应服务时生效。</div>
+      <form id="settings-form" class="settings-form">
+        <h3>Harness Web UI</h3>
+        <div class="form-row"><label>DSH_HOST</label><input name="DSH_HOST"></div>
+        <div class="form-row"><label>DSH_PORT</label><input name="DSH_PORT" type="number"></div>
+        <div class="form-row"><label>启动后打开浏览器</label><label class="checkbox-label"><input type="checkbox" name="OPEN_BROWSER"></label></div>
+        <h3>本地大模型</h3>
+        <div class="form-row"><label>LLM_PORT</label><input name="LLM_PORT" type="number"></div>
+        <div class="form-row"><label>上下文长度 LLM_CTX</label><input name="LLM_CTX" type="number"></div>
+        <div class="form-row"><label>GPU 层数 LLM_NGPU</label><input name="LLM_NGPU" type="number"></div>
+        <div class="form-row"><label>并行数 LLM_PARALLEL</label><input name="LLM_PARALLEL" type="number"></div>
+        <div class="form-row"><label>API Key LLM_API_KEY</label><input name="LLM_API_KEY"></div>
+        <h3>启动器</h3>
+        <div class="form-row"><label>启动器端口 LAUNCHER_PORT</label><input name="LAUNCHER_PORT" type="number"></div>
+        <div class="form-row"><label>模型广场镜像 HUB_MIRROR</label><input name="HUB_MIRROR"></div>
+        <div class="form-row"><label>仅白名单仓库</label><label class="checkbox-label"><input type="checkbox" name="HUB_ALLOWLIST_ONLY"></label></div>
+        <div class="form-row"><label>更新源（清单地址）</label><input name="LAUNCHER_UPDATE_URL" placeholder="http(s) 或本地文件路径，留空用默认"></div>
+        <div class="form-row">
+          <label>主题</label>
+          <select id="theme-select" class="theme-select">
+            <option value="dark">深色</option>
+            <option value="light">浅色</option>
+            <option value="system">跟随系统</option>
+          </select>
+          <span class="msg" id="theme-msg"></span>
+        </div>
+        <div class="form-actions">
+          <button type="submit" class="btn btn-primary">保存设置</button>
+          <span id="settings-msg" class="msg"></span>
+        </div>
+    </form>
+    </section>
+
+    <!-- ============ 维护 ============ -->
+    <section id="page-maintain" class="page">
+      <div class="page-head"><h1>维护</h1></div>
+      <div class="section-title">环境诊断</div>
+      <div id="diag-list" class="diag-list">加载中……</div>
+      <div class="section-title">版本管理</div>
+      <div id="version-table" class="version-table"></div>
+      <div class="section-title">启动器版本</div>
+      <div class="version-row">
+        <span class="name">启动器 V3</span>
+        <span class="ver">当前 <b id="launcher-version">—</b> · 最新 <b id="launcher-latest">未检查</b></span>
+        <span class="msg" id="launcher-msg"></span>
+        <div class="actions">
+          <button class="btn btn-sm" id="btn-launcher-check">检查更新</button>
+          <button class="btn btn-sm btn-primary" id="btn-launcher-update">更新</button>
+          <button class="btn btn-sm" id="btn-launcher-rollback">回滚</button>
+          <button class="btn btn-sm" id="btn-launcher-restart">重启生效</button>
+        </div>
+      </div>
+      <details class="changelog">
+        <summary>更新日志（Changelog）</summary>
+        <pre id="launcher-changelog"></pre>
+      </details>
+      <div id="update-log" class="update-log hidden">
+        <div class="section-title">更新日志 <button class="btn btn-ghost btn-xs" id="btn-update-log-clear">清空</button></div>
+        <pre id="update-log-body"></pre>
+      </div>
+      <div class="section-title">关于</div>
+      <div class="about-row">
+        <button class="btn btn-sm" data-dir="data">打开数据目录</button>
+        <button class="btn btn-sm" data-dir="logs">打开日志目录</button>
+        <button class="btn btn-sm" data-dir="models">打开模型目录</button>
+        <button class="btn btn-sm" data-dir="config">打开配置目录</button>
+        <button class="btn btn-sm" data-dir="root">打开启动器目录</button>
+      </div>
+      <div class="about-row">
+        <span class="badge" id="about-launcher-version">—</span>
+        <span>启动器数据全部保存在本目录内；关闭启动器即停止全部服务。README 见启动器根目录。</span>
+      </div>
+    </section>
+
+    <!-- ============ 控制台 ============ -->
+    <div id="console">
+      <div class="console-head">
+        <div class="console-tabs">
+          <button class="console-tab active" data-log="llm">llm</button>
+          <button class="console-tab" data-log="dsh">dsh</button>
+        </div>
+        <div class="console-actions">
+          <label class="checkbox-label"><input type="checkbox" id="console-autoscroll" checked> 自动滚动</label>
+          <button class="btn btn-ghost btn-xs" id="btn-console-clear">清屏</button>
+          <button class="btn btn-ghost btn-xs" id="btn-console-collapse">收起</button>
+        </div>
+      </div>
+      <pre id="console-body" class="console-body"></pre>
+    </div>
+  </main>
+</div>
+<script src="app.js"></script>
+</body>
+</html>
