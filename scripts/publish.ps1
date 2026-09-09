@@ -102,13 +102,13 @@ $rel = Invoke-RestMethod -Method Post -Uri "$api/releases" -Headers $headers -Bo
 $relId = $rel.id
 Write-Host "[publish] Release 已创建: $relId"
 
-# ---------- 8) 上传资产 ----------
-$assetHeaders = @{ Authorization = "Bearer $Token"; 'User-Agent' = 'dsh-publish' }
-$assetHeaders['Content-Type'] = 'application/octet-stream'
-Invoke-RestMethod -Method Post -Uri "$api/releases/$relId/assets?name=$zipName" -Headers $assetHeaders -InFile $zipPath | Out-Null
+# ---------- 8) 上传资产（必须走 uploads.github.com；
+#    api.github.com 的 assets POST 在国内网络下会 404，2026-09-09 实测） ----------
+$assetHeaders = @{ Authorization = "Bearer $Token"; 'User-Agent' = 'dsh-publish'; 'Content-Type' = 'application/octet-stream' }
+$upApi = "https://uploads.github.com/repos/$Repo"
+Invoke-RestMethod -Method Post -Uri "$upApi/releases/$relId/assets?name=$zipName" -Headers $assetHeaders -InFile $zipPath | Out-Null
 Write-Host "[publish] 已上传 $zipName"
-$assetHeaders['Content-Type'] = 'application/json'
-Invoke-RestMethod -Method Post -Uri "$api/releases/$relId/assets?name=launcher-manifest.json" -Headers $assetHeaders -InFile $manifestPath | Out-Null
+Invoke-RestMethod -Method Post -Uri "$upApi/releases/$relId/assets?name=launcher-manifest.json" -Headers $assetHeaders -InFile $manifestPath | Out-Null
 Write-Host "[publish] 已上传 launcher-manifest.json"
 
 # ---------- 9) 推 tag ----------
