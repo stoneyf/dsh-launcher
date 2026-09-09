@@ -6,7 +6,7 @@ import { EventEmitter } from 'node:events'
 import { spawn } from 'node:child_process'
 import { createWriteStream, statSync, renameSync, existsSync, mkdirSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
-import { DIRS, logPath } from './core.mjs'
+import { DIRS, logPath, readConfig } from './core.mjs'
 
 export const downloadEvents = new EventEmitter()
 
@@ -37,7 +37,37 @@ export function taskList() {
   return [...tasks.values()].map(serialize)
 }
 
-async function headTotal(url) {
+/**
+ * 用 curl 直接取文本（head=true 取响应头，否则取响应体），失败返回 null。
+ * 用途：配置了 DOWNLOAD_PROXY 时，Node 的 fetch 不走系统/指定代理，改用 curl。
+ */
+export function curlText(url, { proxy = '', head = false, timeoutSec = 12 } = {}) {
+  return new Promise(resolve => {
+    const args = ['-s', head ? 'I' : 'L', '--ssl-no-revoke', '--max-time', String(timeoutSec)]
+    if (proxy) args.push('-x', proxy)
+    args.push(url)
+    let proc
+    try {
+      proc = spawn(curlExe(), args, { windowsHide: true })
+    } catch {
+      return resolve(null)
+    }
+    let out = ''
+    proc.stdout.setEncoding('utf8')
+    proc.stdout.on('data', chunk => { out += chunk })
+    proc.stderr.on('data', () => {})
+    proc.on('error', () => resolve(null))
+    proc.on('exit', code => resolve(code === 0 ? out : null))
+  })
+}
+
+async function headTotal(url, proxy = '') {
+  if (proxy) {
+    const out = await curlText(url, { proxy, head: true, timeoutSec: 12 })
+    if (!out) return null
+    const m = /content-length:\s*(\d+)/im.exec(out)
+    return m ? Number(m[1]) : null
+  }
   try {
     const res = await fetch(url, { method: 'HEAD', redirect: 'follow', signal: AbortSignal.timeout(25000) })
     const len = Number(res.headers.get('content-length'))
@@ -84,12 +114,12 @@ export function startDownload({ url, dest, label = 'download' }) {
         downloadEvents.emit('task', serialize(t))
         return
       }
-      t.total = await headTotal(url)
-      const proc = spawn(
-        curlExe(),
-        ['-L', '--ssl-no-revoke', '--retry', '8', '--retry-delay', '3', '-C', '-', '-o', part, url],
-        { stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true },
-      )
+      const proxy = (readConfig().DOWNLOAD_PROXY ?? '').trim()
+      t.total = await headTotal(url, proxy)
+      const dlArgs = ['-L', '--ssl-no-revoke', '--retry', '8', '--retry-delay', '3', '-C', '-', '-o', part]
+      if (proxy) dlArgs.push('-x', proxy)
+      dlArgs.push(url)
+      const proc = spawn(curlExe(), dlArgs, { stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true })
       t.proc = proc
       proc.stderr.pipe(createWriteStream(logPath('downloads.log'), { flags: 'a' }))
       proc.on('error', error => {

@@ -16,13 +16,16 @@ import {
 import { join, basename } from 'node:path'
 import { DIRS, ROOT, readConfig, LAUNCHER_VERSION, backupDirs } from './core.mjs'
 import { compareVersions, updateEvents } from './versions.mjs'
-import { downloadTo } from './downloads.mjs'
+import { downloadTo, curlText } from './downloads.mjs'
 import { extractZip } from './zip-utils.mjs'
 
 const emit = (line, type = 'log') =>
   updateEvents.emit('event', { component: 'launcher', type, line: String(line).slice(0, 2000), ts: Date.now() })
 
 export const CHANGELOG = `
+3.3.2
+  · 设置新增「下载代理 DOWNLOAD_PROXY」：直连不稳定时填代理地址（如 http://127.0.0.1:10808），
+    所有下载（启动器更新/模型/运行时）与更新清单请求均经代理，留空为直连
 3.3.1
   · exe 缺失组件提示文案修正（setup.bat 已随 V2 退役）
 3.3.0
@@ -86,9 +89,17 @@ async function loadManifest() {
   const source = cfg.LAUNCHER_UPDATE_URL || join(ROOT, 'launcher-manifest.json')
   let raw = null
   if (/^https?:\/\//i.test(source)) {
-    const res = await fetch(source, { signal: AbortSignal.timeout(20000), headers: { Accept: 'application/json' } })
-    if (!res.ok) throw new Error(`更新清单请求失败（HTTP ${res.status}）`)
-    raw = await res.json()
+    const proxy = (cfg.DOWNLOAD_PROXY ?? '').trim()
+    if (proxy) {
+      // 配置了下载代理：Node fetch 不走代理，改用 curl（与下载同一代理）
+      const text = await curlText(source, { proxy, timeoutSec: 20 })
+      if (text == null) throw new Error('更新清单请求失败（curl 经代理）')
+      raw = JSON.parse(text)
+    } else {
+      const res = await fetch(source, { signal: AbortSignal.timeout(20000), headers: { Accept: 'application/json' } })
+      if (!res.ok) throw new Error(`更新清单请求失败（HTTP ${res.status}）`)
+      raw = await res.json()
+    }
   } else {
     if (!existsSync(source)) throw new Error(`未找到更新清单：${source}（可在设置中配置 LAUNCHER_UPDATE_URL）`)
     raw = JSON.parse(readFileSync(source, 'utf8'))
