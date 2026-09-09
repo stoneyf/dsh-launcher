@@ -23,7 +23,7 @@ Set-Location $root
 
 # ---------- 1) 版本号 ----------
 $core = Get-Content (Join-Path $root 'server\core.mjs') -Raw -Encoding UTF8
-if ($core -notmatch "LAUNCHER_VERSION\s*=\s*'([^']+)')") { throw '无法从 server\core.mjs 解析 LAUNCHER_VERSION' }
+if ($core -notmatch "LAUNCHER_VERSION\s*=\s*'([^']+)'") { throw '无法从 server\core.mjs 解析 LAUNCHER_VERSION' }
 $ver = $Matches[1]
 $tag = "v$ver"
 $zipName = "launcher-$tag.zip"
