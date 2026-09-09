@@ -74,9 +74,10 @@ if ($LASTEXITCODE -ne 0) { throw "git tag $tag 失败" }
 if (-not $Token) {
   $credIn = "protocol=https`nhost=github.com`npath=$Repo`n"
   $credOut = $credIn | git credential fill
-  $tokLine = $credOut | Where-Object { $_ -like 'token=*' } | Select-Object -First 1
-  if (-not $tokLine) { throw 'git credential fill 未返回 token（先手动 git push 一次以缓存凭据）' }
-  $Token = ($tokLine -replace '^token=', '').Trim()
+  $Token = $null
+  foreach ($line in $credOut) { if ($line -like 'token=*') { $Token = ($line -replace '^token=', '').Trim() } }
+  if (-not $Token) { foreach ($line in $credOut) { if ($line -like 'password=*') { $Token = ($line -replace '^password=', '').Trim() } } }
+  if (-not $Token) { throw 'git credential fill 未返回 token（先手动 git push 一次以缓存凭据）' }
 }
 $api = "https://api.github.com/repos/$Repo"
 $headers = @{ Authorization = "Bearer $Token"; 'User-Agent' = 'dsh-publish'; Accept = 'application/json' }
