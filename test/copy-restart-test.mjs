@@ -12,11 +12,11 @@ import { existsSync, readFileSync, rmSync, watch } from 'node:fs'
 
 const COPY = 'D:\\dsh-launcher-copy'
 const NODE = 'D:\\dsh-launcher\\runtime\\node\\node.exe'
-const MAIN = `${COPY}\\server-v3\\main.mjs`
+const MAIN = `${COPY}\\server\\main.mjs`
 const PORT = 7611
 const DSH_PORT = 3081
 const STATE_FILE = `${COPY}\\data\\launcher-services.json`
-const TOKEN_FILE = `${COPY}\\logs\\launcher-v3.token`
+const TOKEN_FILE = `${COPY}\\logs\\launcher.token`
 
 let passed = 0, failed = 0
 const ok = (cond, label) => { if (cond) { passed++; console.log(`  ✓ ${label}`) } else { failed++; console.log(`  ✗ ${label}`) } }

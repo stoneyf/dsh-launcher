@@ -8,12 +8,14 @@ harness/
 runtime/
 llm/
 vendor/
-electron/
 
 # 进程/日志/令牌
 *.pid
 *.token
 *.log
+
+# 发版产物
+dist/
 
 # 测试产物
 test/fixture/

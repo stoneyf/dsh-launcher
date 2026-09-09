@@ -1,8 +1,8 @@
 {
-  "name": "dsh-launcher-v3",
+  "name": "dsh-launcher",
   "version": "3.0.0",
   "private": true,
-  "description": "DSH 本地启动器 V3 桌面壳（主进程即启动器后端）",
+  "description": "DSH 本地启动器桌面壳（主进程即启动器后端）",
   "type": "module",
   "main": "main.mjs",
   "scripts": {

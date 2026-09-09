@@ -1,11 +1,12 @@
 /**
- * 启动器 V3 自身版本管理：版本清单（manifest）检查、更新（备份+替换）、回滚、重启生效。
+ * 启动器自身版本管理：版本清单（manifest）检查、更新（备份+替换）、回滚、重启生效。
  *
  * 清单格式（JSON）：
  *   { "version": "3.1.0", "notes": "更新说明", "url": "http(s) 或本地 zip 路径" }
  * 清单来源：config LAUNCHER_UPDATE_URL（http(s) URL 或本地文件路径），
  * 默认 ROOT\launcher-manifest.json（未配置且无本地清单 = 未配置更新源）。
- * zip 内容布局与启动器目录一致：server-v3/ gui-v3/ electron-v3/ *.bat *.vbs README-v3.md
+ * zip 内容布局与启动器目录一致：server/ gui/ electron/ *.bat *.vbs *.exe *.cs README.md
+ * 更新源默认走 GitHub Releases（见 scripts\publish.ps1 与 config LAUNCHER_UPDATE_URL）。
  *
  * 进度日志复用 versions.updateEvents（component='launcher'），GUI 无需新 SSE。
  */
@@ -22,8 +23,15 @@ const emit = (line, type = 'log') =>
   updateEvents.emit('event', { component: 'launcher', type, line: String(line).slice(0, 2000), ts: Date.now() })
 
 export const CHANGELOG = `
+3.3.0
+  · 目录结构去 -v3：server/ gui/ electron/ + 入口 launcher.bat、启动器.bat/vbs、dsh-launcher.exe
+  · 启动器自更新源指向 GitHub（Releases 清单 + raw 清单 URL），新增 scripts\\publish.ps1 一键发版
+  · electron 运行时移至 runtime\\electron；V2 组件退役（源码备份至 GitHub）
+3.2.0
+  · 重启续会话：退出时写服务状态，新实例自动恢复 dsh/llm（关窗/崩溃均适用）
+  · 模型广场：模型介绍 + 硬件建议；关于页目录按钮修复；新增 exe 双击入口
 3.1.0
-  · 双击入口隐藏 cmd 窗口（启动器-v3.vbs）
+  · 双击入口隐藏 cmd 窗口（启动器.vbs）
   · 启动器版本管理：版本展示、检查/安装更新、回滚、changelog
   · 模型广场：搜索分页加载、下载速度与 ETA、文件筛选/排序、已安装标记、打开仓库页
   · 新增浅色主题（深色/浅色/跟随系统）
@@ -32,13 +40,13 @@ export const CHANGELOG = `
   · 重启按钮独立编排（stopping→查杀孤儿→等端口→starting→loading→ready）
   · SSE 阶段进度即时推送 + 历史回放
   · /api/status 携带启动器版本与重启状态
-  · 令牌文件 logs\\launcher-v3.token，与 V2 并存
+  · 令牌文件 logs\\launcher.token
   · EADDRINUSE 自动回退随机端口并弹窗提醒
 `.trim()
 
 /** 参与版本备份/替换的启动器自身文件（相对 ROOT）。 */
-const MANAGED_DIRS = ['server-v3', 'gui-v3', 'electron-v3']
-const MANAGED_FILES = ['launcher-v3.bat', '启动器-v3.bat', '启动器-v3.vbs', 'README-v3.md']
+const MANAGED_DIRS = ['server', 'gui', 'electron']
+const MANAGED_FILES = ['launcher.bat', '启动器.bat', '启动器.vbs', 'dsh-launcher.exe', 'launcher.cs', 'README.md']
 
 let checkCache = null // { version, notes, url, checkedAt }
 
@@ -154,10 +162,10 @@ export async function updateLauncher() {
   mkdirSync(staging, { recursive: true })
   emit('解压更新包……')
   extractZip(zip, staging)
-  const verifyMain = join(staging, 'server-v3', 'main.mjs')
-  const verifyGui = join(staging, 'gui-v3', 'app.js')
+  const verifyMain = join(staging, 'server', 'main.mjs')
+  const verifyGui = join(staging, 'gui', 'app.js')
   if (!existsSync(verifyMain) || !existsSync(verifyGui)) {
-    throw new Error('更新包布局不完整（缺少 server-v3\\main.mjs 或 gui-v3\\app.js）')
+    throw new Error('更新包布局不完整（缺少 server\\main.mjs 或 gui\\app.js）')
   }
   // 3) 备份当前版本
   const backupDir = join(ROOT, `launcher-backup-${LAUNCHER_VERSION}`)

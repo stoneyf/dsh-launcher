@@ -21,7 +21,7 @@ step('test start')
 // 必须先设好环境变量，再用「动态 import」取 LAUNCHER_VERSION —— 若用静态 import，
 // 它会被提升到赋值之前，ROOT 就会指向开发树而非 fixture，甚至查杀真实 3080 端口。
 process.env.DSH_LAUNCHER_ROOT = FIXTURE
-const { LAUNCHER_VERSION } = await import(pathToFileURL(join(here, '..', 'server-v3', 'core.mjs')).href)
+const { LAUNCHER_VERSION } = await import(pathToFileURL(join(here, '..', 'server', 'core.mjs')).href)
 
 let passed = 0
 let failed = 0
@@ -49,7 +49,7 @@ step('① fixture done')
 console.log('② 启动 V3 后端（DSH_LAUNCHER_ROOT=fixture）')
 step('② backend import start')
 process.env.DSH_LAUNCHER_ROOT = FIXTURE
-const { startServer, shutdown } = await import(pathToFileURL(join(here, '..', 'server-v3', 'main.mjs')).href)
+const { startServer, shutdown } = await import(pathToFileURL(join(here, '..', 'server', 'main.mjs')).href)
 const { port: bport, token } = await startServer({ port: BACKEND_PORT })
 ok(bport > 0, `后端监听 :${bport}`)
 step('② backend up')
@@ -246,7 +246,7 @@ step('⑨ service-state restore')
 
   // 第二实例（独立进程，模拟 relaunch 后的新实例）
   const childLog = join(here, 'selftest.child.log')
-  const child = spawn(process.execPath, [join(here, '..', 'server-v3', 'main.mjs'), '--port=7998'], {
+  const child = spawn(process.execPath, [join(here, '..', 'server', 'main.mjs'), '--port=7998'], {
     cwd: FIXTURE, env: { ...process.env, DSH_LAUNCHER_ROOT: FIXTURE }, windowsHide: true,
     stdio: ['ignore', 'pipe', 'pipe'],
   })
@@ -258,7 +258,7 @@ step('⑨ service-state restore')
     return (await fetch('http://127.0.0.1:7998/api/ping').then(() => true).catch(() => false))
   }, 15000)
   ok(up === true, '第二实例已启动 :7998')
-  const childToken = readFileSync(join(FIXTURE, 'logs', 'launcher-v3.token'), 'utf8').trim()
+  const childToken = readFileSync(join(FIXTURE, 'logs', 'launcher.token'), 'utf8').trim()
   const restored = await waitFor(async () => {
     const res = await fetch('http://127.0.0.1:7998/api/status', { headers: { Authorization: `Bearer ${childToken}` } })
     const st = await res.json().catch(() => null)

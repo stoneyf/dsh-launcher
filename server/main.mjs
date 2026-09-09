@@ -1,14 +1,14 @@
 /**
- * 启动器 V3 后端入口：HTTP 服务 + 路由 + token 认证 + SSE + 静态资源 + 生命周期。
- * 可被 electron-v3 主进程 import（startServer），也可独立运行：
- *   node server-v3\main.mjs [--browser] [--port 7610]
+ * 启动器后端入口：HTTP 服务 + 路由 + token 认证 + SSE + 静态资源 + 生命周期。
+ * 可被 electron 主进程 import（startServer），也可独立运行：
+ *   node server\main.mjs [--browser] [--port 7610]
  *
- * V3 新增：
+ * 3.x 特性：
  *  - POST /api/services/{llm,dsh}/restart —— 由启动器独立完成的重启编排，
  *    立即 202 返回（调用方可以是正在被重启的 dsh 会话里的 agent）；
  *  - GET  /api/services/events —— 重启阶段进度 SSE；
  *  - /api/status 携带 versions.launcher 与 restarting 状态；
- *  - 令牌文件改用 logs\launcher-v3.token（与 V2 并存不冲突）。
+ *  - 令牌文件 logs\launcher.token（每次启动重新生成）。
  */
 import http from 'node:http'
 import crypto from 'node:crypto'
@@ -31,7 +31,7 @@ import * as downloads from './downloads.mjs'
 import * as versions from './versions.mjs'
 import * as launcherUpdate from './launcher-update.mjs'
 
-const TOKEN_FILE = join(DIRS.logs, 'launcher-v3.token')
+const TOKEN_FILE = join(DIRS.logs, 'launcher.token')
 const token = crypto.randomBytes(24).toString('hex')
 
 // GUI 宿主（Electron）的 stdout 可能已断管：吞掉 EPIPE，避免 console.log 抛异常。
@@ -480,7 +480,7 @@ export function startServer({ port = 0, onRelaunch = null } = {}) {
     try {
       if (pathname === '/api/ping') return sendJson(res, 200, { ok: true })
       if (!pathname.startsWith('/api/')) return serveStatic(res, pathname)
-      if (!authorized(req, req.url ?? '/')) return sendError(res, 401, '需要访问令牌（logs\\launcher-v3.token）')
+      if (!authorized(req, req.url ?? '/')) return sendError(res, 401, '需要访问令牌（logs\\launcher.token）')
       for (const r of routes) {
         const m = r.pattern.exec(pathname)
         if (m && r.method === req.method) {

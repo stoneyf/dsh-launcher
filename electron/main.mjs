@@ -1,14 +1,14 @@
 /**
- * DSH 本地启动器 V3 — Electron 主进程（即启动器后端宿主）。
+ * DSH 本地启动器 — Electron 主进程（即启动器后端宿主）。
  * 窗口关闭 → 停止全部子进程 → 退出（不常驻后台）。
- * 复用 V2 安装好的 electron 运行时：
- *   electron\node_modules\electron\dist\electron.exe electron-v3
+ * 使用自带 electron 运行时：
+ *   runtime\electron\dist\electron.exe electron
  */
 import { app, BrowserWindow, shell, dialog } from 'electron'
 import { join, dirname } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { appendFileSync, mkdirSync } from 'node:fs'
-import { readConfig, ensureDirs, DIRS } from '../server-v3/core.mjs'
+import { readConfig, ensureDirs, DIRS } from '../server/core.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 
@@ -25,7 +25,7 @@ process.stderr.on('error', () => {})
 process.on('uncaughtException', error => elog('uncaughtException:', error?.stack ?? error))
 process.on('unhandledRejection', error => elog('unhandledRejection:', error?.stack ?? error))
 
-// 后端（server-v3）的 console 输出在 GUI 模式会丢失：转发到 electron.log，
+// 后端（server）的 console 输出在 GUI 模式会丢失：转发到 electron.log，
 // 便于排查「自动恢复 dsh 失败」这类静默错误。
 for (const level of ['log', 'warn', 'error']) {
   const original = console[level].bind(console)
@@ -38,7 +38,7 @@ for (const level of ['log', 'warn', 'error']) {
   }
 }
 
-const { startServer, shutdown } = await import(pathToFileURL(join(here, '..', 'server-v3', 'main.mjs')).href)
+const { startServer, shutdown } = await import(pathToFileURL(join(here, '..', 'server', 'main.mjs')).href)
 
 const gotLock = app.requestSingleInstanceLock()
 if (!gotLock) {
@@ -89,9 +89,9 @@ if (!gotLock) {
       if (port && actualPort !== port) {
         await dialog.showMessageBox(null, {
           type: 'warning',
-          title: 'DSH 启动器 V3',
-          message: `端口 ${port} 被占用（V2 启动器可能还在运行），V3 已改用随机端口 ${actualPort}。`,
-          detail: '建议先关闭 V2 启动器再启动 V3。',
+          title: 'DSH 启动器',
+          message: `端口 ${port} 被占用，已改用随机端口 ${actualPort}。`,
+          detail: '可能有另一个启动器实例正在运行。',
         })
       }
 
@@ -103,7 +103,7 @@ if (!gotLock) {
         minHeight: 640,
         backgroundColor: lightTheme ? '#f5f6f8' : '#14161a',
         autoHideMenuBar: true,
-        title: 'DSH 启动器 V3',
+        title: 'DSH 启动器',
         show: false,
         webPreferences: {
           contextIsolation: true,
