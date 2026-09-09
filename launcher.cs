@@ -39,7 +39,7 @@ static class DshLauncher
         else
         {
             System.Windows.Forms.MessageBox.Show(
-                "缺少必要组件，请先运行 setup.bat。\n(未找到 runtime\\electron 或 runtime\\node)",
+                "缺少必要组件，请检查 DSH 启动器是否完整解压。\n(未找到 runtime\\electron 或 runtime\\node)",
                 "DSH 启动器");
             return 1;
         }

@@ -4,6 +4,9 @@
 
 ## 更新日志
 
+### 3.3.1
+- **exe 提示文案修正**：缺失必要组件时不再提示「请先运行 setup.bat」（该脚本已随 V2 退役），改为「请检查 DSH 启动器是否完整解压」。
+
 ### 3.3.0
 - **目录结构去 -v3**：`server/ gui/ electron/` + 入口 `launcher.bat`、`启动器.bat/vbs`、`dsh-launcher.exe`、`launcher.cs`、`test/`；electron 运行时移至 `runtime\electron`（与 `runtime\node` 并列）；V2 组件退役（源码备份至 GitHub 仓库 `stoneyf/dsh-launcher-v2`）。
 - **GitHub 更新源**：自更新默认走 GitHub Releases —— 维护页「检查更新」读取 `https://raw.githubusercontent.com/stoneyf/dsh-launcher/main/launcher-manifest.json`（稳定地址，永远指向最新 release 的 zip）。发版用 `scripts\publish.ps1`（打包 + manifest + commit + tag + release 一键完成）。网络不佳时可在设置里把更新源临时改为 ghproxy 前缀或本地文件。

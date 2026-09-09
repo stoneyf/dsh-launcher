@@ -69,6 +69,8 @@ if ($LASTEXITCODE -ne 0) {
 }
 & git tag -f $tag
 if ($LASTEXITCODE -ne 0) { throw "git tag $tag 失败" }
+& git push origin main
+if ($LASTEXITCODE -ne 0) { Write-Host '[publish] 警告: git push main 失败（可稍后手动重推）' }
 
 # ---------- 6) GitHub token ----------
 if (-not $Token) {

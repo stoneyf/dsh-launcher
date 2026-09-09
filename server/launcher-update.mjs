@@ -23,6 +23,8 @@ const emit = (line, type = 'log') =>
   updateEvents.emit('event', { component: 'launcher', type, line: String(line).slice(0, 2000), ts: Date.now() })
 
 export const CHANGELOG = `
+3.3.1
+  · exe 缺失组件提示文案修正（setup.bat 已随 V2 退役）
 3.3.0
   · 目录结构去 -v3：server/ gui/ electron/ + 入口 launcher.bat、启动器.bat/vbs、dsh-launcher.exe
   · 启动器自更新源指向 GitHub（Releases 清单 + raw 清单 URL），新增 scripts\\publish.ps1 一键发版
