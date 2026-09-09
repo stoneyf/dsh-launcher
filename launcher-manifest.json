@@ -1,5 +1,5 @@
 {
-    "version":  "3.3.1",
-    "notes":  "exe 缺失组件提示文案修正（setup.bat 已随 V2 退役）",
-    "url":  "https://github.com/stoneyf/dsh-launcher/releases/download/v3.3.1/launcher-v3.3.1.zip"
+    "version":  "3.3.2",
+    "notes":  "设置新增「下载代理 DOWNLOAD_PROXY」：直连不稳时所有下载与清单请求经代理，留空为直连",
+    "url":  "https://github.com/stoneyf/dsh-launcher/releases/download/v3.3.2/launcher-v3.3.2.zip"
 }
