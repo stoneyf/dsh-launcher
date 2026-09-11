@@ -122,11 +122,15 @@ function pidAlive(pid) {
 export async function llmStatus() {
   const cfg = readConfig()
   const pid = readPid('llm')
-  const running = state.llm?.running === true || pidAlive(pid)
-  const health = running ? (await httpStatus(`${llmBaseUrl()}/v1/models`)) === 200 : false
+  const health = (await httpStatus(`${llmBaseUrl()}/v1/models`, 1500)) === 200
+  let running = state.llm?.running === true || pidAlive(pid)
+  // 启动器之外启动的本地模型（如 dsh-tasks 插件的 Auto 本地切换）：pid 文件为空
+  // 但端口健康检查通过 → 同样视为运行中，避免状态页误报「未启动」而实际可用。
+  if (!running && health) running = true
+  const holder = running ? (pid ?? portHolderPids(Number(cfg.LLM_PORT))[0] ?? null) : null
   return {
     running,
-    pid: running ? pid : null,
+    pid: holder,
     host: cfg.LLM_HOST,
     port: Number(cfg.LLM_PORT),
     model: modelId(),
@@ -160,6 +164,11 @@ export async function startLlm() {
   const model = modelPath()
   if (!existsSync(model)) throw new Error(`模型文件不存在（${model}）。请在启动器模型管理中下载。`)
   if (await tcpPortBusy(cfg.LLM_HOST, Number(cfg.LLM_PORT))) {
+    // 端口被「同一个」本地模型占着（如 dsh-tasks 插件 Auto 本地切换启动的实例）：
+    // 提示用「重启本地模型」，而不是误导用户去改端口号。
+    if ((await httpStatus(`${llmBaseUrl()}/v1/models`, 1500)) === 200) {
+      throw new Error(`本地大模型已在运行（端口 ${cfg.LLM_PORT} 健康检查通过，可能是插件 Auto 本地切换启动的）。想换配置请用「重启本地模型」。`)
+    }
     throw new Error(`端口 ${cfg.LLM_PORT} 已被占用。请修改 config\\launcher.env 的 LLM_PORT。`)
   }
   syncSettings()
