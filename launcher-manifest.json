@@ -1,5 +1,5 @@
 {
-    "version":  "3.4.0",
-    "notes":  "本地模型状态修正：由启动器之外启动的本地模型（如 dsh-tasks 插件 Auto 本地切换）不再误报「未启动」——状态页在 pid 缺失时补健康探测；「启动本地模型」遇到端口被同一模型占用时提示改用「重启本地模型」",
-    "url":  "https://github.com/stoneyf/dsh-launcher/releases/download/v3.4.0/launcher-v3.4.0.zip"
+    "version":  "3.5.0",
+    "notes":  "下载提速：中国镜像（默认 hf-mirror，可用 DIRECT_HOSTS 追加）自动直连、绕开海外代理，实测模型下载 4.5→21 MB/s（快 4.7 倍）；GitHub/nodejs 等其余源仍走 DOWNLOAD_PROXY（小文件快 6 倍）。新增设置「直连主机 DIRECT_HOSTS」。",
+    "url":  "https://github.com/stoneyf/dsh-launcher/releases/download/v3.5.0/launcher-v3.5.0.zip"
 }
