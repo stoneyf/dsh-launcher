@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
 import net from 'node:net'
 
-export const LAUNCHER_VERSION = '3.4.0'
+export const LAUNCHER_VERSION = '3.5.0'
 
 const serverDir = dirname(fileURLToPath(import.meta.url))
 /** 根目录：默认取 server 上一级；DSH_LAUNCHER_ROOT 可覆盖（与传给 dsh 进程的同名变量一致，便于测试与外部发现）。 */
@@ -51,6 +51,7 @@ export const CONFIG_DEFAULTS = {
   THEME: 'dark',
   LAUNCHER_UPDATE_URL: '',
   DOWNLOAD_PROXY: '',
+  DIRECT_HOSTS: '',
 }
 
 export function ensureDirs() {
