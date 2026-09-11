@@ -1,5 +1,5 @@
 {
-    "version":  "3.5.3",
-    "notes":  "3.5.1 · 模型最大输出 maxTokens 8K→16K：长回答（写文章 / 长代码）不再被截断；短问答不受影响（16K 是上限，答完即停）\n3.5.2 · 上下文长度 / 最大输出自动调节：LLM_CTX=auto 时按显存 + 模型结构（gguf 探测 KV 缓存）自动选出能容纳的最大上下文（本机 32GB：128K→192K），最大输出自动对齐模型上限 32K\n3.5.3 · 设置页「上下文长度」改下拉菜单：可选 自动（按显存）/ 32K / 64K / 128K / 192K / 256K，默认 auto",
-    "url":  "https://github.com/stoneyf/dsh-launcher/releases/download/v3.5.3/launcher-v3.5.3.zip"
+    "version":  "3.5.4",
+    "notes":  "3.5.4 更新：\n· 最大输出 LLM_MAXTOKENS 改独立设置：可选 自动（用模型上限）/ 4K / 8K / 16K / 32K / 64K / 128K；自动时按当前模型自身上限算（不再写死 32K，换模型自动适配）。\n· 上下文长度 / 最大输出选「自动」时，下方实时提示实际生效值（如 实际 192K / 实际 64K），方便确认。\n· Qwen3.x 最大输出按官网规格修正为 64K（之前误写 32K）。",
+    "url":  "https://github.com/stoneyf/dsh-launcher/releases/download/v3.5.4/launcher-v3.5.4.zip"
 }
