@@ -61,6 +61,28 @@ export function curlText(url, { proxy = '', head = false, timeoutSec = 12 } = {}
   })
 }
 
+/**
+ * 决定某个下载 URL 该用哪个代理（返回 '' = 直连）。
+ * 中国镜像主机（默认 HUB_MIRROR=hf-mirror，另可用 DIRECT_HOSTS 逗号追加）
+ * 直连比绕海外代理快得多，故绕过代理；其余主机走 DOWNLOAD_PROXY。
+ */
+export function proxyForUrl(url, cfg) {
+  const proxy = (cfg?.DOWNLOAD_PROXY ?? '').trim()
+  if (!proxy) return ''
+  try {
+    const host = new URL(url).host.split(':')[0].toLowerCase()
+    const direct = new Set()
+    const hubHost = (cfg?.HUB_MIRROR || 'https://hf-mirror.com')
+      .replace(/^https?:\/\//i, '').replace(/\/.*$/, '').toLowerCase()
+    if (hubHost) direct.add(hubHost)
+    for (const h of String(cfg?.DIRECT_HOSTS || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean)) direct.add(h)
+    for (const dh of direct) {
+      if (host === dh || host.endsWith('.' + dh)) return ''
+    }
+  } catch { /* URL 解析失败 → 走代理 */ }
+  return proxy
+}
+
 async function headTotal(url, proxy = '') {
   if (proxy) {
     const out = await curlText(url, { proxy, head: true, timeoutSec: 12 })
@@ -114,7 +136,8 @@ export function startDownload({ url, dest, label = 'download' }) {
         downloadEvents.emit('task', serialize(t))
         return
       }
-      const proxy = (readConfig().DOWNLOAD_PROXY ?? '').trim()
+      // 中国镜像（hf-mirror 等）直连更快，proxyForUrl 自动判定是否绕过代理
+      const proxy = proxyForUrl(url, readConfig())
       t.total = await headTotal(url, proxy)
       const dlArgs = ['-L', '--ssl-no-revoke', '--retry', '8', '--retry-delay', '3', '-C', '-', '-o', part]
       if (proxy) dlArgs.push('-x', proxy)

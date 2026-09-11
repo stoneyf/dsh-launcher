@@ -16,13 +16,17 @@ import {
 import { join, basename } from 'node:path'
 import { DIRS, ROOT, readConfig, LAUNCHER_VERSION, backupDirs } from './core.mjs'
 import { compareVersions, updateEvents } from './versions.mjs'
-import { downloadTo, curlText } from './downloads.mjs'
+import { downloadTo, curlText, proxyForUrl } from './downloads.mjs'
 import { extractZip } from './zip-utils.mjs'
 
 const emit = (line, type = 'log') =>
   updateEvents.emit('event', { component: 'launcher', type, line: String(line).slice(0, 2000), ts: Date.now() })
 
 export const CHANGELOG = `
+3.5.0
+   · 下载提速：中国镜像（默认 hf-mirror，可用 DIRECT_HOSTS 追加）自动直连、绕开海外代理。
+     实测模型下载 4.5→21 MB/s（快 4.7 倍）；GitHub 等其余源仍走 DOWNLOAD_PROXY（小文件快 6 倍）
+   · 设置新增「直连主机 DIRECT_HOSTS」（逗号分隔），默认自动包含 HUB_MIRROR 主机
 3.3.2
   · 设置新增「下载代理 DOWNLOAD_PROXY」：直连不稳定时填代理地址（如 http://127.0.0.1:10808），
     所有下载（启动器更新/模型/运行时）与更新清单请求均经代理，留空为直连
@@ -89,7 +93,7 @@ async function loadManifest() {
   const source = cfg.LAUNCHER_UPDATE_URL || join(ROOT, 'launcher-manifest.json')
   let raw = null
   if (/^https?:\/\//i.test(source)) {
-    const proxy = (cfg.DOWNLOAD_PROXY ?? '').trim()
+    const proxy = proxyForUrl(source, cfg)
     if (proxy) {
       // 配置了下载代理：Node fetch 不走代理，改用 curl（与下载同一代理）
       const text = await curlText(source, { proxy, timeoutSec: 20 })
