@@ -21,7 +21,7 @@ import { fileURLToPath } from 'node:url'
 import { spawn } from 'node:child_process'
 import {
   DIRS, ROOT, readConfig, writeConfig, ensureDirs, logPath, modelPath, syncSettings, tcpPortBusy,
-  waitPortFree, LAUNCHER_VERSION,
+  waitPortFree, LAUNCHER_VERSION, resolveCtx, resolveMaxTokens, probeModel,
 } from './core.mjs'
 import * as services from './services.mjs'
 import * as gpu from './gpu.mjs'
@@ -179,11 +179,21 @@ route('GET', /^\/api\/status$/, async (req, res) => {
     const s = statfsSync(ROOT)
     disk = { free: s.bavail * s.bsize, total: s.blocks * s.bsize }
   } catch { /* 不可用 */ }
+  // 解析后的上下文 / 最大输出（供设置页"自动"时提示实际值）
+  const ctx = resolveCtx()
+  const probe = probeModel()
+  const llmResolved = {
+    ctx,
+    maxTokens: resolveMaxTokens(ctx),
+    modelMaxOutput: probe?.max_output ?? 32768,
+    modelNativeContext: probe?.native_context ?? null,
+  }
   sendJson(res, 200, {
     services: { llm: await services.llmStatus(), dsh: services.dshStatus() },
     restarting: services.restartStates(),
     gpu: await gpu.gpuInfo(),
     config: cfg,
+    llm: llmResolved,
     models: listModels(),
     versions: { launcher: LAUNCHER_VERSION, ...versions.versionSummary() },
     ports: {

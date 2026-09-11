@@ -23,6 +23,16 @@ const emit = (line, type = 'log') =>
   updateEvents.emit('event', { component: 'launcher', type, line: String(line).slice(0, 2000), ts: Date.now() })
 
 export const CHANGELOG = `
+3.5.4
+   · 最大输出 LLM_MAXTOKENS 改独立设置：可选 自动（用模型上限）/ 4K / 8K / 16K / 32K / 64K / 128K；自动时按当前模型自身上限算（不再写死 32K，换模型自动适配）
+   · 上下文长度 / 最大输出选「自动」时，下方实时提示实际生效值（如 实际 192K / 实际 32K），方便确认
+3.5.3
+   · 设置页「上下文长度」改成下拉菜单：可选 自动（按显存）/ 32K / 64K / 128K / 192K / 256K，不用再手填数字
+3.5.2
+   · 上下文长度 / 最大输出自动调节：LLM_CTX=auto 时按显存 + 模型结构（gguf 探测 KV 缓存）自动选出能容纳的最大上下文
+     （本机 32GB 显存：128K→192K），最大输出自动对齐模型上限 32K。想手动锁定就把 LLM_CTX 改成固定数字（如 131072）
+3.5.1
+   · 模型最大输出 maxTokens 8K→16K：长回答（写文章/长代码）不再被截断；短问答不受影响（16K 是上限，答完即停）
 3.5.0
    · 下载提速：中国镜像（默认 hf-mirror，可用 DIRECT_HOSTS 追加）自动直连、绕开海外代理。
      实测模型下载 4.5→21 MB/s（快 4.7 倍）；GitHub 等其余源仍走 DOWNLOAD_PROXY（小文件快 6 倍）

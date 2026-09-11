@@ -1,4 +1,4 @@
-﻿# ============================================================
+# ============================================================
 #  DSH 启动器 GitHub 一键发版
 #  用法:  pwsh scripts\publish.ps1 -Notes "本版本说明"
 #  可选:  -Repo stoneyf/dsh-launcher  -Token <PAT>  -Force（同名 release 已存在时覆盖）
@@ -100,7 +100,9 @@ $relBody = [ordered]@{
   draft = $false
   prerelease = $false
 }
-$rel = Invoke-RestMethod -Method Post -Uri "$api/releases" -Headers $headers -Body ($relBody | ConvertTo-Json -Depth 4) -ContentType 'application/json'
+$relJson = $relBody | ConvertTo-Json -Depth 4
+# 用 UTF-8 字节发 body（PS5.1 字符串 body 遇多行中文会被 GitHub 400 "Problems parsing JSON"）
+$rel = Invoke-RestMethod -Method Post -Uri "$api/releases" -Headers $headers -Body ([System.Text.Encoding]::UTF8.GetBytes($relJson)) -ContentType 'application/json; charset=utf-8'
 $relId = $rel.id
 Write-Host "[publish] Release 已创建: $relId"
 
