@@ -203,6 +203,9 @@ input:focus, textarea:focus { outline: 1px solid var(--accent); }
 .form-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 7px 0; }
 .form-row label { color: var(--text-dim); }
 .form-row input { width: 300px; }
+.form-row select { width: 300px; }
+.form-hint { padding: 0 0 6px 2px; font-size: 12px; color: var(--text-dim); min-height: 15px; line-height: 1.4; }
+.form-hint b { color: var(--text); font-weight: 600; }
 .form-actions { display: flex; align-items: center; margin-top: 18px; }
 .checkbox-label { display: inline-flex; align-items: center; gap: 6px; color: var(--text-dim); font-size: 13px; cursor: pointer; }
 input[type=checkbox] { accent-color: var(--accent); width: 15px; height: 15px; }

@@ -14,7 +14,7 @@ import { EventEmitter } from 'node:events'
 import {
   DIRS, ROOT, readConfig, writePid, readPid, clearPid, logPath, logTail,
   nodeExe, llmBaseUrl, modelPath, modelId, syncSettings, killProcessTree,
-  tcpPortBusy, freePortAfter, sleep, portHolderPids, waitPortFree,
+  tcpPortBusy, freePortAfter, sleep, portHolderPids, waitPortFree, resolveCtx,
 } from './core.mjs'
 
 const state = { llm: null, dsh: null }
@@ -177,7 +177,7 @@ export async function startLlm() {
     '--alias', modelId(),
     '--host', cfg.LLM_HOST,
     '--port', String(cfg.LLM_PORT),
-    '--ctx-size', String(cfg.LLM_CTX),
+    '--ctx-size', String(resolveCtx()),
     '--n-gpu-layers', String(cfg.LLM_NGPU),
     '--parallel', String(cfg.LLM_PARALLEL),
     '--jinja',

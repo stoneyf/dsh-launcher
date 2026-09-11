@@ -651,9 +651,51 @@ async function loadSettings() {
     if (!el.name) continue
     const value = cfg[el.name] ?? ''
     if (el.type === 'checkbox') el.checked = value === '1' || value === true
-    else el.value = value
+    else if (el.tagName === 'SELECT') {
+      el.value = value
+      if (el.selectedIndex < 0) el.selectedIndex = 0  // 值不在选项里时回落第一项
+    } else el.value = value
   }
   $('#hub-allowlist').checked = cfg.HUB_ALLOWLIST_ONLY === '1'
+  updateLlmHints()
+  if (!form.dataset.llmHintsBound) {
+    form.dataset.llmHintsBound = '1'
+    form.querySelector('[name=LLM_CTX]')?.addEventListener('change', updateLlmHints)
+    form.querySelector('[name=LLM_MAXTOKENS]')?.addEventListener('change', updateLlmHints)
+  }
+}
+
+/** "自动"时按实际解析值给出提示：上下文按显存、最大输出取模型上限（都不超上下文）。 */
+function updateLlmHints() {
+  const llm = status?.llm
+  const fmtK = n => (n >= 1024 ? `${Math.round(n / 1024)}K` : String(n))
+  const form = $('#settings-form')
+  const ctxSel = form?.querySelector('[name=LLM_CTX]')
+  const tokSel = form?.querySelector('[name=LLM_MAXTOKENS]')
+  if (!ctxSel || !tokSel) return
+  const ctxHint = $('#ctx-hint')
+  const tokHint = $('#maxtok-hint')
+  const modelMax = llm?.modelMaxOutput ?? 32768
+  const modelNative = llm?.modelNativeContext ?? null
+  // 上下文：auto 用后端解析值，否则用所选值
+  const ctx = (ctxSel.value === 'auto') ? (llm?.ctx ?? null) : (Number(ctxSel.value) || null)
+  // 最大输出：auto 用模型上限，否则用所选值；最终都不超过上下文
+  const cap = (tokSel.value === 'auto') ? modelMax : (Number(tokSel.value) || modelMax)
+  const maxTok = (ctx != null) ? Math.min(cap, ctx) : cap
+  if (ctxHint) {
+    ctxHint.innerHTML = (ctx != null)
+      ? (ctxSel.value === 'auto'
+          ? `实际 <b>${fmtK(ctx)}</b>${modelNative ? ` · 模型上限 ${fmtK(modelNative)}` : ''}（按显存自动）`
+          : `实际 <b>${fmtK(ctx)}</b>`)
+      : ''
+  }
+  if (tokHint) {
+    tokHint.innerHTML = (maxTok != null)
+      ? (tokSel.value === 'auto'
+          ? `实际 <b>${fmtK(maxTok)}</b>（模型上限 ${fmtK(modelMax)}${(ctx != null && maxTok < modelMax) ? `，受上下文 ${fmtK(ctx)} 限制` : ''}）`
+          : `实际 <b>${fmtK(maxTok)}</b>${(ctx != null && maxTok < cap) ? `（受上下文 ${fmtK(ctx)} 限制）` : ''}`)
+      : ''
+  }
 }
 
 // ---------- 维护 ----------

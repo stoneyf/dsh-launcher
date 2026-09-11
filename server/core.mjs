@@ -5,13 +5,13 @@
  * V3 新增：DSH_LAUNCHER_ROOT 环境变量可覆盖根目录（测试用）；
  * 端口占用者查询（netstat）与等待端口释放，服务重启编排依赖。
  */
-import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, statSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
 import net from 'node:net'
 
-export const LAUNCHER_VERSION = '3.5.0'
+export const LAUNCHER_VERSION = '3.5.4'
 
 const serverDir = dirname(fileURLToPath(import.meta.url))
 /** 根目录：默认取 server 上一级；DSH_LAUNCHER_ROOT 可覆盖（与传给 dsh 进程的同名变量一致，便于测试与外部发现）。 */
@@ -42,7 +42,8 @@ export const CONFIG_DEFAULTS = {
   LLM_HOST: '127.0.0.1',
   LLM_PORT: '8080',
   LLM_MODEL: 'models\\Huihui-Qwen3.8-27B-abliterated-Q4_K.gguf',
-  LLM_CTX: '32768',
+  LLM_CTX: 'auto',
+  LLM_MAXTOKENS: 'auto',
   LLM_NGPU: '999',
   LLM_PARALLEL: '1',
   LLM_API_KEY: 'local',
@@ -140,24 +141,83 @@ export function replaceYamlSection(content, sectionName, replacement) {
   return out.join('\r\n')
 }
 
+/** 探测模型 gguf：原生上下文 + 每 token KV 缓存字节数。按模型路径缓存；python/gguf 缺失返回 null。 */
+let _probeCache = null  // { path, result }
+export function probeModel() {
+  const model = modelPath()
+  if (_probeCache && _probeCache.path === model) return _probeCache.result
+  const py = join(serverDir, 'probe_model.py')
+  if (existsSync(py) && existsSync(model)) {
+    try {
+      const r = run('python', [py, model])
+      if (r.ok) {
+        const line = String(r.stdout).trim().split('\n').pop()
+        if (line && line.startsWith('{')) _probeCache = { path: model, result: JSON.parse(line) }
+      }
+    } catch { /* 兜底：走固定上下文 */ }
+  }
+  return _probeCache ? _probeCache.result : null
+}
+
+/** GPU 总显存（MiB）；nvidia-smi 缺失/失败返回 0。 */
+export function getTotalVramMiB() {
+  try {
+    const r = run('nvidia-smi', ['--query-gpu=memory.total', '--format=csv,noheader,nounits'])
+    const n = Number(String(r.stdout).trim().split(/\s+/)[0])
+    return Number.isFinite(n) && n > 0 ? n : 0
+  } catch { return 0 }
+}
+
+/** 解析上下文窗口：LLM_CTX=auto 时按显存自动计算（取能容纳的最大 16K 整数倍），否则用固定值。 */
+export function resolveCtx() {
+  const cfg = readConfig()
+  const raw = String(cfg.LLM_CTX ?? '').trim().toLowerCase()
+  if (raw !== 'auto') return Number(cfg.LLM_CTX) || 32768
+  const probe = probeModel()
+  const totalVram = getTotalVramMiB()
+  const model = modelPath()
+  const modelBytes = existsSync(model) ? statSync(model).size : 0
+  if (!probe?.kv_per_token || !totalVram || !modelBytes) return 131072  // 兜底：探测不到用 128K
+  const overheadMiB = 1536   // CUDA 上下文 + embedding + 杂项开销
+  const safetyMiB = 1024     // 额外预留余量
+  const modelVramMiB = modelBytes / 1048576 + overheadMiB
+  const kvBudgetMiB = totalVram - modelVramMiB - safetyMiB
+  if (kvBudgetMiB <= 0) return 8192
+  let ctx = Math.floor(kvBudgetMiB * 1048576 / probe.kv_per_token)
+  if (probe.native_context) ctx = Math.min(ctx, probe.native_context)  // 不超过模型原生上限
+  ctx = Math.floor(ctx / 16384) * 16384   // 向下取整到 16K 整数倍
+  ctx = Math.max(ctx, 8192)               // 下限保护
+  return ctx
+}
+
+/** 解析最大输出 token：LLM_MAXTOKENS=auto 时用模型自身上限（探测，缺省 32K），否则用固定值；最终都不超过上下文窗口。 */
+export function resolveMaxTokens(ctx) {
+  const cfg = readConfig()
+  const raw = String(cfg.LLM_MAXTOKENS ?? '').trim().toLowerCase()
+  const modelMax = probeModel()?.max_output ?? 32768
+  const cap = raw === 'auto' ? modelMax : (Number(cfg.LLM_MAXTOKENS) || modelMax)
+  return Math.min(cap, ctx)
+}
+
 /** 把本地大模型接入 Harness：维护 llm-deepseek 与 agent-default-model 两段。 */
 export function syncSettings() {
   const cfg = readConfig()
   const id = modelId()
   const llmPort = Number(cfg.LLM_PORT)
-  const ctx = Number(cfg.LLM_CTX) || 32768
+  const ctx = resolveCtx()
+  const maxTok = resolveMaxTokens(ctx)
   const llmSection = [
     'llm-deepseek:',
     '  apiKeyEnv: LLM_API_KEY',
     `  baseURL: 'http://${cfg.LLM_HOST}:${llmPort}/v1'`,
     '  thinking: disabled',
-    '  maxTokens: 8192',
+    `  maxTokens: ${maxTok}`,
     `  defaultContextWindow: ${ctx}`,
     '  models:',
     `    - id: ${id}`,
     `      name: ${id}`,
     `      contextWindow: ${ctx}`,
-    '      maxTokens: 8192',
+    `      maxTokens: ${maxTok}`,
   ].join('\r\n')
   const selSection = [
     'agent-default-model:',

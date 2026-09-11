@@ -174,7 +174,25 @@
         <div class="form-row"><label>启动后打开浏览器</label><label class="checkbox-label"><input type="checkbox" name="OPEN_BROWSER"></label></div>
         <h3>本地大模型</h3>
         <div class="form-row"><label>LLM_PORT</label><input name="LLM_PORT" type="number"></div>
-        <div class="form-row"><label>上下文长度 LLM_CTX</label><input name="LLM_CTX" type="number"></div>
+        <div class="form-row"><label>上下文长度 LLM_CTX</label><select name="LLM_CTX">
+          <option value="auto">自动（按显存计算，推荐）</option>
+          <option value="32768">32K</option>
+          <option value="65536">64K</option>
+          <option value="131072">128K</option>
+          <option value="196608">192K</option>
+          <option value="262144">256K（模型上限）</option>
+        </select></div>
+        <div class="form-hint" id="ctx-hint"></div>
+        <div class="form-row"><label>最大输出 LLM_MAXTOKENS</label><select name="LLM_MAXTOKENS">
+          <option value="auto">自动（用模型上限，推荐）</option>
+          <option value="4096">4K</option>
+          <option value="8192">8K</option>
+          <option value="16384">16K</option>
+          <option value="32768">32K</option>
+          <option value="65536">64K</option>
+          <option value="131072">128K</option>
+        </select></div>
+        <div class="form-hint" id="maxtok-hint"></div>
         <div class="form-row"><label>GPU 层数 LLM_NGPU</label><input name="LLM_NGPU" type="number"></div>
         <div class="form-row"><label>并行数 LLM_PARALLEL</label><input name="LLM_PARALLEL" type="number"></div>
         <div class="form-row"><label>API Key LLM_API_KEY</label><input name="LLM_API_KEY"></div>
