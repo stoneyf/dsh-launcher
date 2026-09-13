@@ -13,7 +13,7 @@ import { join } from 'node:path'
 import { EventEmitter } from 'node:events'
 import {
   DIRS, ROOT, readConfig, writePid, readPid, clearPid, logPath, logTail,
-  nodeExe, llmBaseUrl, modelPath, modelId, syncSettings, killProcessTree,
+  nodeExe, llmBaseUrl, modelPath, modelId, mmprojPath, syncSettings, killProcessTree,
   tcpPortBusy, freePortAfter, sleep, portHolderPids, waitPortFree, resolveCtx,
 } from './core.mjs'
 
@@ -135,6 +135,7 @@ export async function llmStatus() {
     port: Number(cfg.LLM_PORT),
     model: modelId(),
     modelFile: modelPath(),
+    mmproj: mmprojPath(),
     endpoint: `${llmBaseUrl()}/v1`,
     health,
   }
@@ -163,6 +164,8 @@ export async function startLlm() {
   if (!existsSync(exe)) throw new Error(`llama-server.exe 不存在（${exe}）。请先运行 setup.bat。`)
   const model = modelPath()
   if (!existsSync(model)) throw new Error(`模型文件不存在（${model}）。请在启动器模型管理中下载。`)
+  const mmproj = mmprojPath()
+  if (mmproj && !existsSync(mmproj)) throw new Error(`视觉投影器文件不存在（${mmproj}）。请先下载 mmproj 文件，或清空 LLM_MMPROJ。`)
   if (await tcpPortBusy(cfg.LLM_HOST, Number(cfg.LLM_PORT))) {
     // 端口被「同一个」本地模型占着（如 dsh-tasks 插件 Auto 本地切换启动的实例）：
     // 提示用「重启本地模型」，而不是误导用户去改端口号。
@@ -182,6 +185,8 @@ export async function startLlm() {
     '--parallel', String(cfg.LLM_PARALLEL),
     '--jinja',
   ]
+  // 视觉：加载 mmproj 投影器后，llama-server 支持图像/视频输入（OpenAI image_url）
+  if (mmproj) args.push('--mmproj', mmproj)
   const proc = spawn(exe, args, {
     cwd: DIRS.llm,
     stdio: ['ignore', 'pipe', 'pipe'],

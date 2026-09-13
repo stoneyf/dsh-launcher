@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
 import net from 'node:net'
 
-export const LAUNCHER_VERSION = '3.5.4'
+export const LAUNCHER_VERSION = '3.6.0'
 
 const serverDir = dirname(fileURLToPath(import.meta.url))
 /** 根目录：默认取 server 上一级；DSH_LAUNCHER_ROOT 可覆盖（与传给 dsh 进程的同名变量一致，便于测试与外部发现）。 */
@@ -42,6 +42,7 @@ export const CONFIG_DEFAULTS = {
   LLM_HOST: '127.0.0.1',
   LLM_PORT: '8080',
   LLM_MODEL: 'models\\Huihui-Qwen3.8-27B-abliterated-Q4_K.gguf',
+  LLM_MMPROJ: '',
   LLM_CTX: 'auto',
   LLM_MAXTOKENS: 'auto',
   LLM_NGPU: '999',
@@ -113,6 +114,14 @@ export function modelPath() {
 
 export function modelId() {
   return modelPath().split(/[\\/]/).pop().replace(/\.gguf$/i, '')
+}
+
+/** 视觉投影器（mmproj）路径；LLM_MMPROJ 为空表示不启用视觉，返回 null。 */
+export function mmprojPath() {
+  const p = readConfig().LLM_MMPROJ
+  if (!p || !String(p).trim()) return null
+  const v = String(p).trim()
+  return v.includes(':\\') || v.startsWith('\\\\') ? v : join(ROOT, v)
 }
 
 export function llmBaseUrl() {
@@ -206,6 +215,8 @@ export function syncSettings() {
   const llmPort = Number(cfg.LLM_PORT)
   const ctx = resolveCtx()
   const maxTok = resolveMaxTokens(ctx)
+  // 配置了视觉投影器（LLM_MMPROJ）时声明图像输入能力，DSH 才会放行图片内容。
+  const vision = mmprojPath() !== null
   const llmSection = [
     'llm-deepseek:',
     '  apiKeyEnv: LLM_API_KEY',
@@ -218,6 +229,7 @@ export function syncSettings() {
     `      name: ${id}`,
     `      contextWindow: ${ctx}`,
     `      maxTokens: ${maxTok}`,
+    ...(vision ? [`      inputModalities: [text, image]`] : []),
   ].join('\r\n')
   const selSection = [
     'agent-default-model:',

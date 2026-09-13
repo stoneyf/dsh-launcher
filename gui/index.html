@@ -195,6 +195,8 @@
         <div class="form-hint" id="maxtok-hint"></div>
         <div class="form-row"><label>GPU 层数 LLM_NGPU</label><input name="LLM_NGPU" type="number"></div>
         <div class="form-row"><label>并行数 LLM_PARALLEL</label><input name="LLM_PARALLEL" type="number"></div>
+        <div class="form-row"><label>视觉投影器 LLM_MMPROJ</label><input name="LLM_MMPROJ" placeholder="如 models\mmproj-xxx.gguf（相对或绝对路径；留空 = 纯文本模型）"></div>
+        <div class="form-hint">mmproj 是视觉模型的投影器权重（.gguf）。配置后「启动/重启本地模型」会带 --mmproj 参数，且 Harness 允许向本地模型发送图片。</div>
         <div class="form-row"><label>API Key LLM_API_KEY</label><input name="LLM_API_KEY"></div>
         <h3>启动器</h3>
         <div class="form-row"><label>启动器端口 LAUNCHER_PORT</label><input name="LAUNCHER_PORT" type="number"></div>
