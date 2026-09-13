@@ -111,7 +111,9 @@ if ($Force) {
     $exist = Invoke-RestMethod -Uri "$api/releases/tags/$tag" -Headers $headers
     Invoke-RestMethod -Method Delete -Uri "$api/releases/$($exist.id)" -Headers $headers | Out-Null
     Write-Host "[publish] 已删除旧 release $tag"
-  } catch { /* 不存在则忽略 */ }
+  } catch {
+    # 不存在则忽略
+  }
 }
 $relBody = [ordered]@{
   tag_name = $tag
