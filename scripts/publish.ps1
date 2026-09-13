@@ -21,6 +21,19 @@ $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
 
+# PS 5.1 会把原生命令（git）的 stderr 转成错误记录；EAP=Stop 下即使命令实际
+# 成功也会中断脚本（git 的进度/结果信息恰恰都走 stderr）。统一经此函数调用
+# git：临时降 EAP，按 $LASTEXITCODE 判定成败。
+function Run-Git {
+  param([string[]]$GitArgs)
+  $prev = $ErrorActionPreference
+  $ErrorActionPreference = 'Continue'
+  $out = & git @GitArgs 2>&1 | Out-String
+  $code = $LASTEXITCODE
+  $ErrorActionPreference = $prev
+  [pscustomobject]@{ Code = $code; Out = $out }
+}
+
 # ---------- 1) 版本号 ----------
 $core = Get-Content (Join-Path $root 'server\core.mjs') -Raw -Encoding UTF8
 if ($core -notmatch "LAUNCHER_VERSION\s*=\s*'([^']+)'") { throw '无法从 server\core.mjs 解析 LAUNCHER_VERSION' }
@@ -61,21 +74,29 @@ $manifestPath = Join-Path $root 'launcher-manifest.json'
 Write-Host "[publish] manifest -> $zipUrl"
 
 # ---------- 5) git 提交 + tag ----------
-& git add launcher-manifest.json
-& git diff --cached --quiet
-if ($LASTEXITCODE -ne 0) {
-  & git commit -m "Release $tag"
-  if ($LASTEXITCODE -ne 0) { throw 'git commit 失败' }
+$r = Run-Git add launcher-manifest.json
+if ($r.Code -ne 0) { throw "git add 失败`n$($r.Out)" }
+$r = Run-Git diff --cached --quiet
+if ($r.Code -ne 0) {
+  $r = Run-Git commit -m "Release $tag"
+  if ($r.Code -ne 0) { throw "git commit 失败`n$($r.Out)" }
 }
-& git tag -f $tag
-if ($LASTEXITCODE -ne 0) { throw "git tag $tag 失败" }
-& git push origin main
-if ($LASTEXITCODE -ne 0) { Write-Host '[publish] 警告: git push main 失败（可稍后手动重推）' }
+$r = Run-Git tag -f $tag
+if ($r.Code -ne 0) { throw "git tag $tag 失败`n$($r.Out)" }
+$r = Run-Git push origin main
+if ($r.Code -ne 0) { Write-Host "[publish] 警告: git push main 失败（可稍后手动重推）`n$($r.Out)" }
 
 # ---------- 6) GitHub token ----------
 if (-not $Token) {
-  $credIn = "protocol=https`nhost=github.com`npath=$Repo`n"
-  $credOut = $credIn | git credential fill
+  # 无 BOM 临时文件 + 文件重定向（部分环境下管道 stdin 带 BOM/编码问题，
+  # git 会报 "refusing to work with credential missing protocol field"）
+  $stamp = [guid]::NewGuid().ToString('N')
+  $credInFile = Join-Path $env:TEMP "dsh-publish-cred-$stamp.txt"
+  $credOutFile = Join-Path $env:TEMP "dsh-publish-cred-out-$stamp.txt"
+  [System.IO.File]::WriteAllLines($credInFile, @("protocol=https", "host=github.com", "path=$Repo", ""), [System.Text.UTF8Encoding]::new($false))
+  $null = Start-Process -FilePath 'git' -ArgumentList 'credential', 'fill' -RedirectStandardInput $credInFile -RedirectStandardOutput $credOutFile -NoNewWindow -Wait -PassThru
+  $credOut = @(Get-Content $credOutFile -ErrorAction SilentlyContinue)
+  Remove-Item $credInFile, $credOutFile -ErrorAction SilentlyContinue
   $Token = $null
   foreach ($line in $credOut) { if ($line -like 'token=*') { $Token = ($line -replace '^token=', '').Trim() } }
   if (-not $Token) { foreach ($line in $credOut) { if ($line -like 'password=*') { $Token = ($line -replace '^password=', '').Trim() } } }
@@ -116,8 +137,8 @@ Invoke-RestMethod -Method Post -Uri "$upApi/releases/$relId/assets?name=launcher
 Write-Host "[publish] 已上传 launcher-manifest.json"
 
 # ---------- 9) 推 tag ----------
-& git push origin $tag
-if ($LASTEXITCODE -ne 0) { throw 'git push tag 失败（网络抖动时可手动重推）' }
+$r = Run-Git push origin $tag
+if ($r.Code -ne 0) { throw "git push tag 失败（网络抖动时可手动重推）`n$($r.Out)" }
 
 Write-Host ''
 Write-Host "[publish] 完成：$tag" -ForegroundColor Green

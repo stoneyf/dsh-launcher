@@ -7,6 +7,7 @@
 ### 3.6.0
 - **本地模型支持视觉（图像理解）**：设置页新增「视觉投影器 LLM_MMPROJ」（相对或绝对路径，留空 = 纯文本）。配置后「启动/重启本地模型」自动追加 `--mmproj` 参数加载视觉投影器权重（llama.cpp b10941+ 自带 mtmd 多模态后端），同时 `settings.yaml` 的本地模型条目声明 `inputModalities: [text, image]`，Harness 即可向本地模型发送图片（如 `read_image` 工具读取本地图片后提问）。投影器文件在模型广场下载（mmproj 也是 `.gguf` 后缀，可正常搜索/下载）。
 - `/api/status` 的本地模型状态新增 `mmproj` 字段（已配置的投影器路径，未配置为 null）。
+- **发版脚本兼容 PowerShell 5.1**（`scripts\publish.ps1`）：git 的进度/结果信息走 stderr，PS 5.1 + EAP=Stop 会在 push 实际成功时也中断脚本——现统一经 `Run-Git`（临时降 EAP、按退出码判定）；凭据获取改为无 BOM 临时文件重定向（规避管道 stdin 带 BOM 时 `missing protocol field`）；文件头恢复 UTF-8 BOM（PS 5.1 按系统代码页解析中文注释会报语法错）。
 
 ### 3.5.4
 - **最大输出改独立设置**：设置页新增「最大输出 LLM_MAXTOKENS」下拉菜单（自动 / 4K / 8K / 16K / 32K / 64K / 128K）。自动时按当前模型自身上限算（不再写死 32K，换模型自动适配）。
