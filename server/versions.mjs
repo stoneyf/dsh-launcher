@@ -490,3 +490,72 @@ export async function rollbackComponent(component) {
   }
   throw new Error(`未知组件：${component}`)
 }
+
+// ---------- 版本切换（在已安装的备份版本间切换） ----------
+
+const COMPONENT_NOTES = {
+  harness: { label: 'dsh 版本说明', url: 'https://www.npmjs.com/package/@deepseek-ai/dsh' },
+  llama: { label: 'llama.cpp 版本说明', url: 'https://github.com/ggml-org/llama.cpp/releases' },
+  node: { label: 'Node.js 版本说明', url: 'https://nodejs.org/en/blog/release' },
+}
+
+/** 某组件的版本说明入口（release 页 / 包页）。 */
+export function componentNotes(component) {
+  return COMPONENT_NOTES[component] ?? null
+}
+
+/** 列出某组件可切换的版本：当前 + 已安装的备份。 */
+export function listComponentVersions(component) {
+  const s = versionSummary()
+  let prefix = '', current = null
+  if (component === 'harness') { prefix = 'harness-backup-'; current = s.harness.current }
+  else if (component === 'llama') { prefix = 'llm-backup-'; current = s.llama.current }
+  else if (component === 'node') { prefix = 'runtime-backup-'; current = s.node.current }
+  else throw new Error(`未知组件：${component}`)
+  const seen = new Set()
+  const options = []
+  if (current && current !== '未安装') {
+    options.push({ version: current, isCurrent: true })
+    seen.add(current)
+  }
+  for (const name of backupDirs(ROOT).filter(n => n.startsWith(prefix))) {
+    const version = name.slice(prefix.length)
+    if (seen.has(version)) continue
+    seen.add(version)
+    options.push({ version, isCurrent: false })
+  }
+  return { current, options }
+}
+
+function switchToBackup(dirName, backupName) {
+  const backupPath = join(ROOT, backupName)
+  if (!existsSync(backupPath)) throw new Error(`找不到该版本的备份：${backupName}`)
+  const target = join(ROOT, dirName)
+  if (existsSync(target)) renameSync(target, join(ROOT, `${dirName}-rollback-old-${Date.now()}`))
+  renameSync(backupPath, target)
+  return backupName
+}
+
+/** 切换到某组件的指定已安装版本（从备份恢复）。 */
+export async function switchComponentVersion(component, version) {
+  const v = String(version ?? '').trim()
+  if (!v) throw new Error('未指定版本')
+  if (component === 'harness') {
+    if (dshStatus().running) await stopDsh()
+    return { restored: switchToBackup('harness', `harness-backup-${v}`) }
+  }
+  if (component === 'llama') {
+    if ((await llmStatus()).running) await stopLlm()
+    return { restored: switchToBackup('llm', `llm-backup-${v}`) }
+  }
+  if (component === 'node') {
+    const backup = `runtime-backup-${v}`
+    const backupPath = join(ROOT, backup)
+    if (!existsSync(backupPath)) throw new Error(`找不到该版本的备份：${backup}`)
+    const runtimeDir = DIRS.runtimeNode
+    if (existsSync(runtimeDir)) renameSync(runtimeDir, join(ROOT, `runtime-rollback-old-${Date.now()}`))
+    renameSync(backupPath, runtimeDir)
+    return { restored: backup }
+  }
+  throw new Error(`该组件不支持版本切换：${component}`)
+}

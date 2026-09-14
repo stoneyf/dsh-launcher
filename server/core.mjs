@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
 import net from 'node:net'
 
-export const LAUNCHER_VERSION = '3.6.0'
+export const LAUNCHER_VERSION = '4.0.0'
 
 const serverDir = dirname(fileURLToPath(import.meta.url))
 /** 根目录：默认取 server 上一级；DSH_LAUNCHER_ROOT 可覆盖（与传给 dsh 进程的同名变量一致，便于测试与外部发现）。 */
@@ -51,9 +51,37 @@ export const CONFIG_DEFAULTS = {
   HUB_ALLOWLIST_ONLY: '0',
   HUB_MIRROR: 'https://hf-mirror.com',
   THEME: 'dark',
+  AUTO_START: '0',
   LAUNCHER_UPDATE_URL: '',
   DOWNLOAD_PROXY: '',
   DIRECT_HOSTS: '',
+}
+
+// ---------- 开机自启（Windows 启动项注册表） ----------
+const RUN_KEY = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run'
+const RUN_VALUE = 'DSH Launcher'
+
+/** 写入/删除「开机自启」注册表项。开启时以 --silent 启动（后台静默，托盘运行）。 */
+export function setAutoStart(enabled) {
+  const exe = join(ROOT, 'dsh-launcher.exe')
+  const target = existsSync(exe) ? exe : join(ROOT, 'launcher.bat')
+  const data = `"${target}"${enabled ? ' --silent' : ''}`
+  if (enabled) {
+    spawnSync('reg', ['add', RUN_KEY, '/v', RUN_VALUE, '/t', 'REG_SZ', '/d', data, '/f'], { windowsHide: true })
+  } else {
+    spawnSync('reg', ['delete', RUN_KEY, '/v', RUN_VALUE, '/f'], { windowsHide: true })
+  }
+  return { enabled: Boolean(enabled), target }
+}
+
+/** 读取当前自启状态（注册表为准，缺失时回落配置值）。 */
+export function isAutoStart() {
+  try {
+    const r = spawnSync('reg', ['query', RUN_KEY, '/v', RUN_VALUE], { windowsHide: true, encoding: 'utf8' })
+    if (r.status === 0 && /DSH Launcher/i.test(r.stdout ?? '')) return true
+    if (r.status === 0) return false
+  } catch { /* reg 不可用 */ }
+  return readConfig().AUTO_START === '1'
 }
 
 export function ensureDirs() {

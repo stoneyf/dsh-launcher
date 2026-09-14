@@ -285,3 +285,59 @@ select.theme-select {
   font-size: 12px; font-family: Consolas, "Courier New", monospace;
   white-space: pre-wrap; word-break: break-all; color: var(--console-text);
 }
+
+/* ---------- V4：更新提示横幅 ---------- */
+.update-banner {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  background: color-mix(in srgb, var(--accent) 14%, var(--bg2));
+  border: 1px solid var(--accent); border-radius: 10px;
+  padding: 10px 14px; margin: 10px 0;
+}
+.update-banner-text { color: var(--text); font-size: 13px; }
+.update-banner-text b { color: var(--accent); }
+
+/* ---------- V4：对话管理 / 卡片操作行 ---------- */
+.card-actions { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+.conv-list { display: flex; flex-direction: column; gap: 6px; max-height: 260px; overflow-y: auto; }
+.conv-row {
+  display: flex; align-items: center; gap: 10px;
+  background: var(--bg3); border: 1px solid var(--border); border-radius: 7px;
+  padding: 6px 10px; font-size: 12px;
+}
+.conv-id { color: var(--text); font-family: Consolas, monospace; min-width: 70px; }
+.conv-date { color: var(--text-dim); flex: 1; }
+.conv-size { color: var(--text-dim); }
+.conv-del { color: var(--danger, #e5484d); }
+.conv-del:hover { filter: brightness(1.2); }
+
+/* ---------- V4：版本切换下拉 / 更新说明链接 ---------- */
+.version-select {
+  background: var(--bg3); border: 1px solid var(--border); color: var(--text);
+  border-radius: 7px; padding: 5px 8px; font-size: 12px; font-family: inherit; max-width: 150px;
+}
+.ver-notes { color: var(--accent); text-decoration: none; font-size: 12px; white-space: nowrap; }
+.ver-notes:hover { text-decoration: underline; }
+
+/* ---------- V4：关于（功能说明 + GitHub） ---------- */
+.about-features { background: var(--bg3); border: 1px solid var(--border); border-radius: 8px; padding: 10px 14px; margin: 8px 0; font-size: 13px; }
+.about-features ul { margin: 8px 0 0 18px; padding: 0; }
+.about-features li { margin: 4px 0; color: var(--text-dim); }
+.about-features b { color: var(--text); }
+.about-link { color: var(--accent); text-decoration: none; }
+.about-link:hover { text-decoration: underline; }
+
+/* ---------- V4：下载条（模型名上方 + 删除任务） ---------- */
+.dl-bar { flex-direction: column; align-items: stretch; }
+.dl-name { color: var(--text); font-size: 13px; font-weight: 600; word-break: break-all; }
+.dl-progress-row { display: flex; align-items: center; gap: 10px; margin-top: 6px; }
+.dl-progress-row .progress-outer { flex: 1; margin-top: 0; }
+.dl-progress-row .size { white-space: nowrap; }
+.dl-btns { display: flex; gap: 8px; margin-top: 8px; }
+.dl-delete { color: var(--danger, #e5484d); }
+.dl-delete:hover { filter: brightness(1.2); }
+
+/* ---------- V4：设置（自启开关 + 提示） ---------- */
+.checkbox-label { display: inline-flex; align-items: center; gap: 6px; }
+.form-hint { color: var(--text-dim); font-size: 12px; display: inline-block; }
+.mono { font-family: Consolas, "Courier New", monospace; }
+.mono.small { font-size: 12px; }

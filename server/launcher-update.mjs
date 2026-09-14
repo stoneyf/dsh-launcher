@@ -14,6 +14,7 @@ import {
   existsSync, readFileSync, writeFileSync, rmSync, mkdirSync, readdirSync, copyFileSync, statSync,
 } from 'node:fs'
 import { join, basename } from 'node:path'
+import { spawnSync } from 'node:child_process'
 import { DIRS, ROOT, readConfig, LAUNCHER_VERSION, backupDirs } from './core.mjs'
 import { compareVersions, updateEvents } from './versions.mjs'
 import { downloadTo, curlText, proxyForUrl } from './downloads.mjs'
@@ -22,7 +23,59 @@ import { extractZip } from './zip-utils.mjs'
 const emit = (line, type = 'log') =>
   updateEvents.emit('event', { component: 'launcher', type, line: String(line).slice(0, 2000), ts: Date.now() })
 
+// ---------- GitHub Releases（版本切换：列出 / 下载任意历史版本） ----------
+const GH_REPO = 'stoneyf/dsh-launcher'
+const ghZipUrl = v => `https://github.com/${GH_REPO}/releases/download/v${v}/launcher-v${v}.zip`
+
+/** 从 git 凭证库取 GitHub token（私有仓库访问需要）。无凭证返回 null。 */
+function githubToken() {
+  try {
+    const r = spawnSync('git', ['credential', 'fill'], {
+      input: 'protocol=https\nhost=github.com\n', windowsHide: true, encoding: 'utf8',
+    })
+    for (const line of (r.stdout ?? '').split(/\r?\n/)) {
+      if (line.startsWith('token=')) return line.slice(6).trim()
+      if (line.startsWith('password=')) return line.slice(9).trim()
+    }
+  } catch { /* 无凭证 */ }
+  return null
+}
+
+/** 列出 GitHub 上的全部发布版本（新→旧）：[{version, notes, url, publishedAt}]。 */
+export async function listGitHubVersions() {
+  const token = githubToken()
+  if (!token) return { versions: [], error: '无 GitHub 凭证（无法列出私有仓库版本）' }
+  try {
+    const res = await fetch(`https://api.github.com/repos/${GH_REPO}/releases?per_page=100`, {
+      signal: AbortSignal.timeout(20000),
+      headers: { Authorization: `Bearer ${token}`, Accept: 'application/json', 'User-Agent': 'dsh-launcher' },
+    })
+    if (!res.ok) return { versions: [], error: `GitHub API HTTP ${res.status}` }
+    const releases = await res.json()
+    const versions = (Array.isArray(releases) ? releases : [])
+      .map(r => {
+        const v = String(r.tag_name ?? '').replace(/^v/, '')
+        const asset = (r.assets ?? []).find(a => /\.zip$/i.test(a.name))
+        return { version: v, notes: r.body ?? '', url: asset?.browser_download_url ?? ghZipUrl(v), publishedAt: r.published_at ?? '' }
+      })
+      .filter(x => /^\d+\.\d+\.\d+/.test(x.version))
+    return { versions }
+  } catch (e) {
+    return { versions: [], error: e.message }
+  }
+}
+
 export const CHANGELOG = `
+4.0.0
+    · 全新图标：exe / 窗口 / 任务栏统一为深蓝底白色闪电
+    · 系统托盘：关窗收进托盘不停服务，LLM 后台继续运行；托盘菜单可打开/退出
+    · 开机自启：设置页可开启「开机自动启动」，开机后台静默运行（托盘）
+    · 更新提示：启动时自动检查，发现新版本主页顶部横幅提示（可忽略）
+    · 版本切换：维护页可在任意已安装 / GitHub 历史版本间切换（从 GitHub 下载）
+    · 对话管理：主页列出全部对话，可逐条删除 / 一键清空 / 打开对话文件夹
+    · 模型下载：新增「删除任务」，模型名移到进度条上方
+    · 关于页：新增启动器功能说明 + GitHub 地址；修复打开目录按钮
+    · 主页底部：对话文件夹 / 本地模型快捷按钮
 3.5.4
    · 最大输出 LLM_MAXTOKENS 改独立设置：可选 自动（用模型上限）/ 4K / 8K / 16K / 32K / 64K / 128K；自动时按当前模型自身上限算（不再写死 32K，换模型自动适配）
    · 上下文长度 / 最大输出选「自动」时，下方实时提示实际生效值（如 实际 192K / 实际 32K），方便确认
@@ -80,6 +133,23 @@ export function requestRelaunch() {
 
 function backupNames() {
   return backupDirs(ROOT).filter(n => n.startsWith('launcher-backup-')).sort()
+}
+
+/** 启动器可切换的版本：当前 + 已安装备份。 */
+export function launcherVersions() {
+  const seen = new Set()
+  const installed = []
+  if (/^\d+\.\d+\.\d+/.test(LAUNCHER_VERSION)) {
+    installed.push({ version: LAUNCHER_VERSION, isCurrent: true })
+    seen.add(LAUNCHER_VERSION)
+  }
+  for (const name of backupNames()) {
+    const version = name.slice('launcher-backup-'.length)
+    if (seen.has(version)) continue
+    seen.add(version)
+    installed.push({ version, isCurrent: false })
+  }
+  return { current: LAUNCHER_VERSION, installed }
 }
 
 export function launcherInfo() {
@@ -172,50 +242,95 @@ export async function updateLauncher() {
     return { alreadyLatest: true, version: LAUNCHER_VERSION }
   }
   emit(`最新版本：${manifest.version}${manifest.notes ? `（${manifest.notes}）` : ''}`)
-  // 1) 获取 zip
-  let zip = manifest.url
+  await installLauncherZip(manifest.version, manifest.url, manifest.notes)
+  return { version: manifest.version }
+}
+
+/** 备份当前受管目录到 launcher-backup-<当前版本>。 */
+function backupCurrent() {
+  const backupDir = join(ROOT, `launcher-backup-${LAUNCHER_VERSION}`)
+  rmSync(backupDir, { recursive: true, force: true })
+  mkdirSync(backupDir, { recursive: true })
+  emit(`备份当前版本 ${LAUNCHER_VERSION}……`)
+  for (const dir of MANAGED_DIRS) { const from = join(ROOT, dir); if (existsSync(from)) copyDir(from, join(backupDir, dir)) }
+  for (const file of MANAGED_FILES) { const from = join(ROOT, file); if (existsSync(from)) copyFileSync(from, join(backupDir, file)) }
+}
+
+/** 删除多余旧备份，保留最近 3 份。 */
+function pruneBackups() {
+  for (const name of backupNames().slice(0, -3)) rmSync(join(ROOT, name), { recursive: true, force: true })
+}
+
+/** 把某个备份恢复为当前（替换全部受管目录/文件）。 */
+function restoreBackup(backupName) {
+  const from = join(ROOT, backupName)
+  for (const dir of MANAGED_DIRS) { const target = join(ROOT, dir); if (existsSync(target)) rmSync(target, { recursive: true, force: true }) }
+  for (const file of MANAGED_FILES) { const target = join(ROOT, file); if (existsSync(target)) rmSync(target, { force: true }) }
+  copyDir(from, ROOT)
+}
+
+/** 下载（或就地使用）更新包 → 解压校验 → 备份当前 → 替换 → 清理旧备份。 */
+async function installLauncherZip(version, url, notes = '') {
+  let zip = url
   if (/^https?:\/\//i.test(zip)) {
-    zip = join(DIRS.logs, 'downloads', `launcher-v${manifest.version}.zip`)
+    zip = join(DIRS.logs, 'downloads', `launcher-v${version}.zip`)
     emit(`下载 ${basename(zip)}……`)
-    await downloadTo(manifest.url, zip, {
+    await downloadTo(url, zip, {
       label: 'launcher',
       onProgress: t => emit(`下载 ${Math.round(t.downloaded / 1e6)}MB${t.total ? `/${Math.round(t.total / 1e6)}MB` : ''}`),
     })
   }
   if (!existsSync(zip)) throw new Error(`未找到更新包：${zip}`)
-  // 2) 解压到 staging 并验证
   const staging = join(ROOT, 'launcher-update')
   rmSync(staging, { recursive: true, force: true })
   mkdirSync(staging, { recursive: true })
   emit('解压更新包……')
   extractZip(zip, staging)
-  const verifyMain = join(staging, 'server', 'main.mjs')
-  const verifyGui = join(staging, 'gui', 'app.js')
-  if (!existsSync(verifyMain) || !existsSync(verifyGui)) {
+  if (!existsSync(join(staging, 'server', 'main.mjs')) || !existsSync(join(staging, 'gui', 'app.js'))) {
     throw new Error('更新包布局不完整（缺少 server\\main.mjs 或 gui\\app.js）')
   }
-  // 3) 备份当前版本
-  const backupDir = join(ROOT, `launcher-backup-${LAUNCHER_VERSION}`)
-  rmSync(backupDir, { recursive: true, force: true })
-  mkdirSync(backupDir, { recursive: true })
-  emit(`备份当前版本 ${LAUNCHER_VERSION}……`)
-  for (const dir of MANAGED_DIRS) {
-    const from = join(ROOT, dir)
-    if (existsSync(from)) copyDir(from, join(backupDir, dir))
-  }
-  for (const file of MANAGED_FILES) {
-    const from = join(ROOT, file)
-    if (existsSync(from)) copyFileSync(from, join(backupDir, file))
-  }
-  // 4) 替换
+  backupCurrent()
   emit('替换文件……')
   replaceManaged(staging)
-  // 5) 清理 staging 与旧备份（保留最近 3 份）
   rmSync(staging, { recursive: true, force: true })
-  const old = backupNames().slice(0, -3)
-  for (const name of old) rmSync(join(ROOT, name), { recursive: true, force: true })
-  emit(`更新完成：${LAUNCHER_VERSION} → ${manifest.version}，点击「重启」生效`, 'done')
-  return { version: manifest.version }
+  pruneBackups()
+  emit(`更新完成：${LAUNCHER_VERSION} → ${version}，点击「重启」生效`, 'done')
+}
+
+/** 取某版本的发布信息（notes/url）。无凭证 / 未发布 / 网络失败返回 null。 */
+async function githubRelease(version) {
+  const token = githubToken()
+  if (!token) return null
+  try {
+    const res = await fetch(`https://api.github.com/repos/${GH_REPO}/releases/tags/v${version}`, {
+      signal: AbortSignal.timeout(20000),
+      headers: { Authorization: `Bearer ${token}`, Accept: 'application/json', 'User-Agent': 'dsh-launcher' },
+    })
+    if (!res.ok) return null
+    const r = await res.json()
+    const asset = (r.assets ?? []).find(a => /\.zip$/i.test(a.name))
+    return { notes: r.body ?? '', url: asset?.browser_download_url ?? ghZipUrl(version) }
+  } catch { return null }
+}
+
+/** 切换启动器到指定版本：已安装备份直接恢复；否则从 GitHub 下载该版本并安装。 */
+export async function switchLauncherVersion(version) {
+  const v = String(version ?? '').replace(/^v/, '')
+  if (!/^\d+\.\d+\.\d+/.test(v)) throw new Error('无效版本：' + version)
+  if (v === LAUNCHER_VERSION) { emit(`当前已是 v${v}，无需切换`, 'done'); return { alreadyCurrent: true, version: v } }
+  const backupName = `launcher-backup-${v}`
+  if (existsSync(join(ROOT, backupName))) {
+    backupCurrent()
+    emit(`切换到已安装版本 v${v}……`)
+    restoreBackup(backupName)
+    pruneBackups()
+  } else {
+    const rel = await githubRelease(v)
+    if (!rel) throw new Error(`找不到 v${v} 的发布版本（GitHub 无此版本或网络不可用）`)
+    await installLauncherZip(v, rel.url, rel.notes)
+  }
+  emit(`已切换到 v${v}，点击「重启」生效`, 'done')
+  return { version: v }
 }
 
 export async function rollbackLauncher() {

@@ -1,7 +1,8 @@
 // DSH 启动器 —— 无控制台启动入口（替代 .vbs 隐藏启动，双击即用）
-// 编译: csc /nologo /target:winexe /optimize /codepage:65001 /out:dsh-launcher.exe launcher.cs
+// 编译: csc /nologo /target:winexe /optimize /codepage:65001 /win32icon:launcher.ico /out:dsh-launcher.exe launcher.cs
 // 行为: 双击 → 优先拉起 Electron 桌面窗口（electron/）；
 //       --browser 参数或 electron 缺失时走纯 Node 浏览器模式；
+//       --silent 参数 → 后台静默（开机自启，仅托盘，不弹窗口）；
 //       组件缺失弹出提示框。
 using System;
 using System.Diagnostics;
@@ -19,6 +20,9 @@ static class DshLauncher
         string server = Path.Combine(root, "server", "main.mjs");
 
         bool isBrowser = Array.IndexOf(args, "--browser") >= 0;
+        // 转发额外参数（如 --silent）。Node 模式自行加 --browser，避免重复。
+        string forward = string.Join(" ", args);
+        string forwardNode = string.Join(" ", Array.FindAll(args, a => a != "--browser"));
 
         ProcessStartInfo psi = null;
         if (!isBrowser && File.Exists(electron) && Directory.Exists(electronApp))
@@ -26,14 +30,14 @@ static class DshLauncher
             // 与 launcher.bat 相同：工作目录为根目录，应用目录为 electron
             psi = new ProcessStartInfo();
             psi.FileName = electron;
-            psi.Arguments = "electron";
+            psi.Arguments = "electron" + (forward.Length > 0 ? " " + forward : "");
             psi.WorkingDirectory = root;
         }
         else if (File.Exists(node) && File.Exists(server))
         {
             psi = new ProcessStartInfo();
             psi.FileName = node;
-            psi.Arguments = "\"" + server + "\" --browser";
+            psi.Arguments = "\"" + server + "\" --browser" + (forwardNode.Length > 0 ? " " + forwardNode : "");
             psi.WorkingDirectory = root;
         }
         else

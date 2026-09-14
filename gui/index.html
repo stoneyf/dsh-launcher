@@ -3,7 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>DSH 启动器 V3</title>
+<title>DSH 启动器 V4</title>
+<link rel="icon" type="image/png" href="icon.png">
 <link rel="stylesheet" href="styles.css">
 <script>
   /* 首帧前应用主题，避免闪烁。localStorage 是即时缓存，页面加载后由配置值修正。 */
@@ -19,7 +20,7 @@
 <body>
 <div id="app">
   <aside id="sidebar">
-    <div class="brand"><span class="brand-dot"></span>DSH 启动器 V3</div>
+    <div class="brand"><span class="brand-dot"></span>DSH 启动器 V4</div>
     <nav id="nav">
       <a href="#home" class="nav-item active" data-page="home">🏠 主页</a>
       <a href="#models" class="nav-item" data-page="models">📦 模型</a>
@@ -43,6 +44,7 @@
           <button class="btn btn-danger btn-lg" id="btn-stop-all">⏹ 停止全部</button>
         </div>
       </div>
+      <div id="update-banner" class="update-banner hidden"></div>
       <div id="home-notice" class="notice hidden"></div>
       <div id="home-onboard" class="onboard hidden">
         <b>开始使用</b> <span class="onboard-steps"></span>
@@ -98,6 +100,7 @@
             <div class="kv"><span>Harness (dsh)</span><b id="ver-dsh">—</b></div>
             <div class="kv"><span>llama.cpp</span><b id="ver-llama">—</b></div>
             <div class="kv"><span>内置 Node</span><b id="ver-node">—</b></div>
+            <div class="kv"><span>启动器地址</span><b class="mono small" id="launcher-url">—</b> <button class="btn btn-ghost btn-xs" id="btn-copy-launcher-url">复制</button></div>
           </div>
         </div>
         <div class="card">
@@ -105,6 +108,30 @@
           <div class="card-body">
             <div class="kv"><span>剩余</span><b id="disk-free">—</b></div>
             <div class="kv"><span>总量</span><b id="disk-total">—</b></div>
+          </div>
+        </div>
+      </div>
+      <div class="row2">
+        <div class="card" id="card-conversations">
+          <div class="card-head"><span class="card-title">对话管理</span><span class="badge" id="conv-count">—</span></div>
+          <div class="card-body">
+            <div id="conv-list" class="conv-list">加载中……</div>
+          </div>
+          <div class="card-actions">
+            <button class="btn btn-sm" id="btn-conv-refresh">刷新</button>
+            <button class="btn btn-sm btn-danger-ghost" id="btn-conv-clear">清空全部</button>
+            <button class="btn btn-sm" data-dir="sessions">打开对话文件夹</button>
+          </div>
+        </div>
+        <div class="card" id="card-models-quick">
+          <div class="card-head"><span class="card-title">本地模型</span></div>
+          <div class="card-body">
+            <div class="kv"><span>当前模型</span><b id="quick-model">—</b></div>
+            <div class="kv"><span>已装模型</span><b id="quick-model-count">—</b></div>
+          </div>
+          <div class="card-actions">
+            <button class="btn btn-sm btn-primary" data-dir="models">打开模型文件夹</button>
+            <button class="btn btn-sm" id="btn-models-quick-go">去模型页</button>
           </div>
         </div>
       </div>
@@ -199,6 +226,11 @@
         <div class="form-hint">mmproj 是视觉模型的投影器权重（.gguf）。配置后「启动/重启本地模型」会带 --mmproj 参数，且 Harness 允许向本地模型发送图片。</div>
         <div class="form-row"><label>API Key LLM_API_KEY</label><input name="LLM_API_KEY"></div>
         <h3>启动器</h3>
+        <div class="form-row">
+          <label>开机自动启动</label>
+          <label class="checkbox-label"><input type="checkbox" id="autostart-toggle"></label>
+          <span class="form-hint">开机后后台静默运行（只进托盘，不弹窗口）；关窗也收进托盘、服务不停</span>
+        </div>
         <div class="form-row"><label>启动器端口 LAUNCHER_PORT</label><input name="LAUNCHER_PORT" type="number"></div>
         <div class="form-row"><label>模型广场镜像 HUB_MIRROR</label><input name="HUB_MIRROR"></div>
         <div class="form-row"><label>仅白名单仓库</label><label class="checkbox-label"><input type="checkbox" name="HUB_ALLOWLIST_ONLY"></label></div>
@@ -229,12 +261,14 @@
       <div id="version-table" class="version-table"></div>
       <div class="section-title">启动器版本</div>
       <div class="version-row">
-        <span class="name">启动器 V3</span>
+        <span class="name">启动器 V4</span>
         <span class="ver">当前 <b id="launcher-version">—</b> · 最新 <b id="launcher-latest">未检查</b></span>
         <span class="msg" id="launcher-msg"></span>
         <div class="actions">
           <button class="btn btn-sm" id="btn-launcher-check">检查更新</button>
           <button class="btn btn-sm btn-primary" id="btn-launcher-update">更新</button>
+          <select id="launcher-version-select" class="version-select" title="已安装 + GitHub 历史版本"></select>
+          <button class="btn btn-sm" id="btn-launcher-switch">切换版本</button>
           <button class="btn btn-sm" id="btn-launcher-rollback">回滚</button>
           <button class="btn btn-sm" id="btn-launcher-restart">重启生效</button>
         </div>
@@ -248,6 +282,16 @@
         <pre id="update-log-body"></pre>
       </div>
       <div class="section-title">关于</div>
+      <div class="about-features">
+        <b>DSH 启动器主要功能：</b>
+        <ul>
+          <li>一键启动 / 停止 / 重启 本地大模型（llama.cpp）与 Harness (dsh)；关窗收进托盘，服务后台不停</li>
+          <li>模型广场：搜索、下载、导入本地模型；按本机硬件推荐合适的量化</li>
+          <li>版本管理：harness / llama / node / 启动器 的更新、回滚、在已装版本与 GitHub 历史版本间切换</li>
+          <li>开机自启（后台静默 + 托盘）、更新提示、对话管理（逐条删除 / 一键清空 / 打开文件夹）</li>
+          <li>环境诊断、GPU 显存监控、控制台实时日志、深浅色主题</li>
+        </ul>
+      </div>
       <div class="about-row">
         <button class="btn btn-sm" data-dir="data">打开数据目录</button>
         <button class="btn btn-sm" data-dir="logs">打开日志目录</button>
@@ -257,7 +301,11 @@
       </div>
       <div class="about-row">
         <span class="badge" id="about-launcher-version">—</span>
-        <span>启动器数据全部保存在本目录内；关闭启动器即停止全部服务。README 见启动器根目录。</span>
+        <span>启动器数据全部保存在本目录内；关窗收进托盘、服务后台运行，托盘菜单「退出」才停止全部服务。README 见启动器根目录。</span>
+      </div>
+      <div class="about-row">
+        <span>源码 / 发布地址：</span>
+        <a class="about-link" href="https://github.com/stoneyf/dsh-launcher" target="_blank" rel="noopener">github.com/stoneyf/dsh-launcher</a>
       </div>
     </section>
 

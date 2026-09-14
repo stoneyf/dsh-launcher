@@ -4,7 +4,7 @@
  * 使用自带 electron 运行时：
  *   runtime\electron\dist\electron.exe electron
  */
-import { app, BrowserWindow, shell, dialog } from 'electron'
+import { app, BrowserWindow, shell, dialog, Tray, Menu, nativeImage } from 'electron'
 import { join, dirname } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { appendFileSync, mkdirSync } from 'node:fs'
@@ -46,7 +46,35 @@ if (!gotLock) {
   app.quit()
 } else {
   let mainWindow = null
+  let tray = null
   let quitting = false
+  // --silent（开机自启）：后台静默，不弹窗口，只进托盘
+  const silent = process.argv.includes('--silent')
+  const appIcon = join(here, '..', 'gui', 'icon.png')
+
+  function showWindow() {
+    if (!mainWindow) return
+    if (mainWindow.isMinimized()) mainWindow.restore()
+    mainWindow.show()
+    mainWindow.focus()
+  }
+
+  function createTray() {
+    try {
+      const icon = nativeImage.createFromPath(appIcon)
+      tray = new Tray(icon.isEmpty() ? nativeImage.createEmpty() : icon)
+      tray.setToolTip('DSH 启动器')
+      tray.setContextMenu(Menu.buildFromTemplate([
+        { label: '打开启动器', click: showWindow },
+        { type: 'separator' },
+        { label: '退出', click: () => { quitting = true; void quitAndShutdown('tray-quit') } },
+      ]))
+      tray.on('click', showWindow)
+      elog('托盘已创建')
+    } catch (error) {
+      elog('托盘创建失败：', error?.message ?? error)
+    }
+  }
 
   async function quitAndShutdown(reason) {
     if (quitting) return
@@ -60,15 +88,11 @@ if (!gotLock) {
     app.quit()
   }
 
-  app.on('second-instance', () => {
-    if (mainWindow) {
-      if (mainWindow.isMinimized()) mainWindow.restore()
-      mainWindow.focus()
-    }
-  })
+  app.on('second-instance', showWindow)
 
   app.whenReady().then(async () => {
     try {
+      app.setAppUserModelId('com.dsh.launcher')
       ensureDirs()
       const cfg = readConfig()
       const port = Number(cfg.LAUNCHER_PORT) || 0
@@ -104,6 +128,7 @@ if (!gotLock) {
         backgroundColor: lightTheme ? '#f5f6f8' : '#14161a',
         autoHideMenuBar: true,
         title: 'DSH 启动器',
+        icon: appIcon,
         show: false,
         webPreferences: {
           contextIsolation: true,
@@ -118,14 +143,24 @@ if (!gotLock) {
         return { action: 'deny' }
       })
 
-      mainWindow.once('ready-to-show', () => mainWindow.show())
+      // 关窗 → 收进托盘（服务继续后台运行）；只有明确「退出」才真正关
+      mainWindow.on('close', event => {
+        if (quitting) return
+        event.preventDefault()
+        mainWindow.hide()
+        elog('窗口收进托盘（服务继续后台运行）')
+      })
       mainWindow.on('closed', () => {
         elog('窗口已关闭')
         mainWindow = null
-        void quitAndShutdown('window-closed')
       })
+
+      createTray()
       await mainWindow.loadURL(`http://127.0.0.1:${actualPort}/?token=${token}`)
-      elog('窗口已加载')
+      if (!silent) {
+        mainWindow.once('ready-to-show', () => mainWindow.show())
+      }
+      elog(silent ? '窗口已加载（静默模式，仅托盘）' : '窗口已加载')
     } catch (error) {
       elog('启动失败：', error?.stack ?? error)
       app.quit()

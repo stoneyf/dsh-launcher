@@ -21,7 +21,7 @@ import { fileURLToPath } from 'node:url'
 import { spawn } from 'node:child_process'
 import {
   DIRS, ROOT, readConfig, writeConfig, ensureDirs, logPath, modelPath, syncSettings, tcpPortBusy,
-  waitPortFree, LAUNCHER_VERSION, resolveCtx, resolveMaxTokens, probeModel,
+  waitPortFree, LAUNCHER_VERSION, resolveCtx, resolveMaxTokens, probeModel, setAutoStart, isAutoStart,
 } from './core.mjs'
 import * as services from './services.mjs'
 import * as gpu from './gpu.mjs'
@@ -30,6 +30,7 @@ import * as chat from './chat.mjs'
 import * as downloads from './downloads.mjs'
 import * as versions from './versions.mjs'
 import * as launcherUpdate from './launcher-update.mjs'
+import * as sessions from './sessions.mjs'
 
 const TOKEN_FILE = join(DIRS.logs, 'launcher.token')
 const token = crypto.randomBytes(24).toString('hex')
@@ -253,6 +254,17 @@ route('PUT', /^\/api\/config$/, async (req, res) => {
   } catch (error) { sendError(res, 400, error.message) }
 })
 
+route('GET', /^\/api\/autostart$/, (req, res) => sendJson(res, 200, { enabled: isAutoStart() }))
+route('POST', /^\/api\/autostart$/, async (req, res) => {
+  try {
+    const body = await readBody(req)
+    const enabled = Boolean(body.enabled)
+    setAutoStart(enabled)
+    writeConfig({ AUTO_START: enabled ? '1' : '0' })
+    sendJson(res, 200, { enabled: isAutoStart() })
+  } catch (error) { sendError(res, 400, error.message) }
+})
+
 route('GET', /^\/api\/models$/, (req, res) => sendJson(res, 200, listModels()))
 route('POST', /^\/api\/models\/switch$/, async (req, res) => {
   try {
@@ -317,12 +329,24 @@ route('POST', /^\/api\/downloads$/, async (req, res) => {
 route('POST', /^\/api\/downloads\/([^/]+)\/cancel$/, (req, res, m) => {
   sendJson(res, 200, { ok: downloads.cancelDownload(decodeURIComponent(m[1])) })
 })
+route('DELETE', /^\/api\/downloads\/([^/]+)$/, (req, res, m) => {
+  sendJson(res, 200, { ok: downloads.deleteTask(decodeURIComponent(m[1])) })
+})
 route('GET', /^\/api\/downloads\/events$/, (req, res) => {
   const stream = sse(res)
   for (const task of downloads.taskList()) stream.send('task', task)
   const onTask = task => stream.send('task', task)
   downloads.downloadEvents.on('task', onTask)
   res.on('close', () => downloads.downloadEvents.off('task', onTask))
+})
+
+// ---------- 对话管理 ----------
+route('GET', /^\/api\/sessions$/, (req, res) => sendJson(res, 200, { dir: sessions.SESSIONS_DIR, sessions: sessions.listSessions() }))
+route('DELETE', /^\/api\/sessions\/([^/]+)$/, (req, res, m) => {
+  try { sendJson(res, 200, sessions.deleteSession(decodeURIComponent(m[1]))) } catch (error) { sendError(res, 400, error.message) }
+})
+route('POST', /^\/api\/sessions\/clear$/, (req, res) => {
+  try { sendJson(res, 200, sessions.clearSessions()) } catch (error) { sendError(res, 400, error.message) }
 })
 
 route('POST', /^\/api\/chat\/test$/, async (req, res) => {
@@ -365,6 +389,18 @@ route('POST', /^\/api\/update\/(harness|llama|node|launcher)\/update$/, async (r
 route('POST', /^\/api\/update\/(harness|llama|node|launcher)\/rollback$/, async (req, res, m) => {
   try { sendJson(res, 200, await versions.rollbackComponent(m[1])) } catch (error) { sendError(res, 500, error.message) }
 })
+route('GET', /^\/api\/versions\/(harness|llama|node)\/versions$/, (req, res, m) => {
+  try {
+    const v = versions.listComponentVersions(m[1])
+    sendJson(res, 200, { ...v, notes: versions.componentNotes(m[1]) })
+  } catch (error) { sendError(res, 400, error.message) }
+})
+route('POST', /^\/api\/versions\/(harness|llama|node)\/switch$/, async (req, res, m) => {
+  try {
+    const body = await readBody(req)
+    sendJson(res, 200, await versions.switchComponentVersion(m[1], body.version))
+  } catch (error) { sendError(res, 500, error.message) }
+})
 route('GET', /^\/api\/update\/events$/, (req, res) => {
   const stream = sse(res)
   const onEvent = evt => stream.send('event', evt)
@@ -373,6 +409,24 @@ route('GET', /^\/api\/update\/events$/, (req, res) => {
 })
 
 route('GET', /^\/api\/launcher\/info$/, (req, res) => sendJson(res, 200, launcherUpdate.launcherInfo()))
+route('GET', /^\/api\/launcher\/versions$/, async (req, res) => {
+  try {
+    const installed = launcherUpdate.launcherVersions()
+    const gh = await launcherUpdate.listGitHubVersions()
+    sendJson(res, 200, {
+      current: LAUNCHER_VERSION,
+      installed: installed.installed,
+      github: gh.versions,
+      githubError: gh.error ?? null,
+    })
+  } catch (error) { sendError(res, 500, error.message) }
+})
+route('POST', /^\/api\/launcher\/switch$/, async (req, res) => {
+  try {
+    const body = await readBody(req)
+    sendJson(res, 200, await launcherUpdate.switchLauncherVersion(body.version))
+  } catch (error) { sendError(res, 500, error.message) }
+})
 // 重启生效（electron relaunch）：退出前把运行中的服务状态落盘，
 // 新实例启动时自动恢复 —— dsh 靠浏览器 cookie（data\.credentials.yaml）
 // 还原 agent 会话，正在对话的窗口刷新后继续。
@@ -397,7 +451,7 @@ const OPEN_DIR_HELPER_LOG = join(DIRS.logs, 'open-dir-helper.log')
 route('POST', /^\/api\/open-dir$/, async (req, res) => {
   try {
     const body = await readBody(req)
-    const map = { data: DIRS.data, logs: DIRS.logs, models: DIRS.models, root: ROOT, harness: DIRS.harness, config: DIRS.config }
+    const map = { data: DIRS.data, logs: DIRS.logs, models: DIRS.models, root: ROOT, harness: DIRS.harness, config: DIRS.config, sessions: sessions.SESSIONS_DIR }
     const dir = map[String(body.path ?? '')]
     if (!dir) throw new Error('无效目录')
     if (existsSync(OPEN_DIR_HELPER)) {

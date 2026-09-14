@@ -4,7 +4,7 @@
  */
 import { EventEmitter } from 'node:events'
 import { spawn } from 'node:child_process'
-import { createWriteStream, statSync, renameSync, existsSync, mkdirSync } from 'node:fs'
+import { createWriteStream, statSync, renameSync, existsSync, mkdirSync, unlinkSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
 import { DIRS, logPath, readConfig } from './core.mjs'
 
@@ -205,6 +205,21 @@ export function cancelDownload(id) {
 
 export function stopAllDownloads() {
   for (const id of [...tasks.keys()]) cancelDownload(id)
+}
+
+/** 删除任务：停止 + 移除记录 + 清掉 .part 断点文件。已完成任务的成品模型保留（避免误删）。 */
+export function deleteTask(id) {
+  const t = tasks.get(id)
+  if (!t) return { deleted: false }
+  if (t.timer) clearInterval(t.timer)
+  try { t.proc?.kill('SIGTERM') } catch { /* 已退出 */ }
+  try {
+    const part = `${t.dest}.part`
+    if (existsSync(part)) unlinkSync(part)
+  } catch { /* 忽略 */ }
+  tasks.delete(id)
+  downloadEvents.emit('task', { ...serialize(t), state: 'deleted' })
+  return { deleted: true }
 }
 
 /** 独立下载（供版本更新等模块复用）：返回 Promise，成功 resolve(dest)。 */
