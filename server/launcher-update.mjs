@@ -66,6 +66,12 @@ export async function listGitHubVersions() {
 }
 
 export const CHANGELOG = `
+4.1.0
+    · 修复 dsh 起不来（端口被锁）：web profile 的 webserver 配置会在 patch 层覆盖 dsh web --port，
+      导致改 DSH_PORT 不生效、端口冲突时回退也撞回原端口（EADDRINUSE）。现在启动前自动把该段 port:
+      同步为实际端口（只改这一行，其余不动）
+    · 修复 dsh 启动失败时看不到真实原因：dsh「先监听、随后崩溃退出」时内部状态已清空，
+      原先会抛 TypeError 把真正的错误盖掉，现在直接报出原始错误
 4.0.0
     · 全新图标：exe / 窗口 / 任务栏统一为深蓝底白色闪电
     · 系统托盘：关窗收进托盘不停服务，LLM 后台继续运行；托盘菜单可打开/退出

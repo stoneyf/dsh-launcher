@@ -1,5 +1,5 @@
 {
-    "version":  "3.6.0",
-    "notes":  "v3.6.0: 本地模型视觉支持——设置页新增「视觉投影器 LLM_MMPROJ」（相对/绝对路径，留空=纯文本）。配置后「启动/重启本地模型」自动追加 --mmproj 加载视觉投影器权重（llama.cpp b10941+ 自带 mtmd 多模态后端），settings.yaml 本地模型条目同时声明 inputModalities: [text, image]，Harness 即可向本地模型发送图片（如 read_image 工具）。/api/status 本地模型状态新增 mmproj 字段。另修复 publish.ps1 凭据获取（无 BOM 文件重定向，规避部分环境下管道 stdin 报 missing protocol field）。",
-    "url":  "https://github.com/stoneyf/dsh-launcher/releases/download/v3.6.0/launcher-v3.6.0.zip"
+    "version":  "4.0.0",
+    "notes":  "v4.0.0\n· 全新图标：exe/窗口/任务栏/网页标签统一为深蓝底白色闪电\n· 系统托盘：关窗收进托盘不停服务，本地大模型后台继续运行；托盘菜单可打开/退出\n· 开机自启：设置页「开机自动启动」，开机后台静默运行\n· 主页更新提示：自动查 GitHub 最新 release，横幅可「立即更新/忽略本次」\n· 维护页更新说明 + 版本切换：启动器与 harness/llama/node 可在已装 + GitHub 任意历史版本间切换（从 GitHub 下载）\n· 对话管理：主页下方列出/删除/清空对话 + 打开对话文件夹；本地模型快捷 + 打开模型文件夹 + 启动器地址\n· 模型下载：新增「删除任务」，模型名移到进度条上方\n· 关于页：主要功能说明 + GitHub 地址；修复「打开目录」按钮无效问题",
+    "url":  "https://github.com/stoneyf/dsh-launcher/releases/download/v4.0.0/launcher-v4.0.0.zip"
 }

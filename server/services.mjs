@@ -8,7 +8,7 @@
  * 进度通过 serviceEvents（EventEmitter）广播，供 SSE 与 /api/status 查询。
  */
 import { spawn } from 'node:child_process'
-import { createWriteStream, existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { createWriteStream, existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { EventEmitter } from 'node:events'
 import {
@@ -220,6 +220,45 @@ export async function stopLlm() {
   clearPid('llm')
 }
 
+/**
+ * 让 profile 的 webserver 端口跟随启动器实际使用的端口。
+ *
+ * web profile 的 cordis.patch.yml 里有一行 webserver 配置（remote-web-ui 的
+ * lan-bind 块，带「do not edit」标记），它在 patch 层覆盖 `dsh web --port`。
+ * 不同步的话：改 config\launcher.env 的 DSH_PORT 不生效，端口回退也会让 dsh
+ * 撞回原端口（EADDRINUSE）而不是换到新端口。只改 webserver 那一行，别的不动。
+ *
+ * @returns 变更说明，或 null（无需变更 / 找不到该配置）
+ */
+export function syncWebserverPort(port) {
+  try {
+    const file = join(DIRS.data, 'profiles', 'web', 'cordis.patch.yml')
+    if (!existsSync(file)) return null
+    const lines = readFileSync(file, 'utf8').split('\n')
+    const start = lines.findIndex(line => line.includes('@deepseek-ai/dsh-host-webserver'))
+    if (start < 0) return null
+    let end = lines.length
+    for (let i = start + 1; i < lines.length; i++) {
+      if (/^- /.test(lines[i])) { end = i; break }
+    }
+    for (let i = start; i < end; i++) {
+      const match = /^(\s*port:\s*)(\d+)\s*$/.exec(lines[i])
+      if (!match) continue
+      if (Number(match[2]) === port) return null
+      const previous = Number(match[2])
+      lines[i] = `${match[1]}${port}`
+      const temp = `${file}.port-sync-${process.pid}`
+      writeFileSync(temp, lines.join('\n'))
+      renameSync(temp, file)
+      return `webserver 端口 ${previous} → ${port}`
+    }
+    return null
+  } catch (error) {
+    // 同步失败不该挡住启动：dsh 的 --port 仍会尝试生效，失败原因以日志为准
+    return `端口同步失败（${error.message}）`
+  }
+}
+
 export async function startDsh({ openBrowser = true, allowPortFallback = true } = {}) {
   selfHeal('dsh')
   if (state.dsh?.running) throw new Error('Harness 已在运行。')
@@ -236,6 +275,8 @@ export async function startDsh({ openBrowser = true, allowPortFallback = true } 
       throw new Error(`端口 ${port} 已被占用。`)
     }
   }
+  const portSync = syncWebserverPort(port)
+  if (portSync) console.log(`[launcher] ${portSync}`)
   const args = [bin, 'web', '--host', host, '--port', String(port)]
   if (!openBrowser || cfg.OPEN_BROWSER !== '1') args.push('--no-open')
   const env = {
@@ -277,6 +318,11 @@ export async function startDsh({ openBrowser = true, allowPortFallback = true } 
     throw error
   }
   const url = await resolveTokenUrl(`http://${host}:${port}/`, logStartOffset)
+  // dsh 可能「先监听、随后崩溃退出」（exit 事件已把 state.dsh 置空）：
+  // 此时要报出真实原因，而不是让 state.dsh.url 赋值抛出 TypeError。
+  if (!state.dsh) {
+    throw new Error(`Harness 启动后立即退出（端口 ${port} 已释放）。日志尾部：` + logTail('dsh.err.log', 15))
+  }
   state.dsh.url = url
   const { writeFileSync } = await import('node:fs')
   writeFileSync(join(DIRS.logs, 'dsh.url'), url, 'ascii')

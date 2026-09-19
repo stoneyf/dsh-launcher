@@ -24,3 +24,6 @@ test/selftest.child.log
 test/selftest.last.log
 test/selftest.stderr.log
 test/copy-test.last.log
+
+# 归档参考（非发布产物）
+legacy-v3/
