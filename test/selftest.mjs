@@ -4,7 +4,7 @@
  * 用法：node test\selftest.mjs
  */
 import { spawn, spawnSync } from 'node:child_process'
-import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync, utimesSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
@@ -45,8 +45,8 @@ writeFileSync(join(FIXTURE, 'harness', 'node_modules', '@deepseek-ai', 'dsh', 'l
 ok(true, `fixture @ ${FIXTURE}`)
 step('① fixture done')
 
-// ---------- 2. 启动 V3 后端（进程内） ----------
-console.log('② 启动 V3 后端（DSH_LAUNCHER_ROOT=fixture）')
+// ---------- 2. 启动 V4 后端（进程内） ----------
+console.log('② 启动 V4 后端（DSH_LAUNCHER_ROOT=fixture）')
 step('② backend import start')
 process.env.DSH_LAUNCHER_ROOT = FIXTURE
 const { startServer, shutdown } = await import(pathToFileURL(join(here, '..', 'server', 'main.mjs')).href)
@@ -228,6 +228,34 @@ step('⑧ llm restart error path')
   await collector
 }
 
+// ---------- 8b. 重启续跑意图（4.1.5） ----------
+console.log('⑧b 重启续跑意图（launcher/restart + resume）')
+step('⑧b resume intent')
+{
+  const rf = join(FIXTURE, 'data', 'launcher-resume.json')
+  // 显式 sessionId：写入意图文件；自测模式无 relauncher → 500，但意图仍应落盘
+  const r = await api('POST', '/api/launcher/restart', { sessionId: 'session-abc' })
+  ok(r.status === 500, '自测模式（无 relauncher）→ 500')
+  ok(r.data?.resume === 'session-abc', '响应回显续跑目标会话')
+  ok(existsSync(rf), '意图文件 launcher-resume.json 已写入')
+  const intent = JSON.parse(readFileSync(rf, 'utf8'))
+  ok(intent.sessionId === 'session-abc' && intent.text === '继续', `意图内容正确（默认文案「继续」）: ${JSON.stringify(intent)}`)
+  // 无 sessionId → 取最近更新过的会话（按 mtime）
+  const sdir = join(FIXTURE, 'data', 'sessions', 'prof')
+  mkdirSync(join(sdir, 'session-old'), { recursive: true })
+  mkdirSync(join(sdir, 'session-new'), { recursive: true })
+  const oldF = join(sdir, 'session-old', 'session.jsonl.zstd')
+  const newF = join(sdir, 'session-new', 'session.jsonl.zstd')
+  writeFileSync(oldF, 'old'); writeFileSync(newF, 'new')
+  const now = Date.now()
+  utimesSync(oldF, new Date(now - 100000), new Date(now - 100000))
+  utimesSync(newF, new Date(now), new Date(now))
+  const r2 = await api('POST', '/api/launcher/restart', {})
+  const intent2 = JSON.parse(readFileSync(rf, 'utf8'))
+  ok(intent2.sessionId === 'session-new', '无 sessionId → 选最近更新的会话')
+  rmSync(rf, { force: true })
+}
+
 // ---------- 9. 收尾 + 服务状态自动恢复（第二实例） ----------
 // 退出前 dsh 仍在运行（⑦ 之后）→ 退出时写 launcher-services.json；
 // 拉起第二个实例（模拟 relaunch）→ 新实例应自动恢复 dsh 并消费状态文件。
@@ -243,6 +271,10 @@ step('⑨ service-state restore')
   ok(existsSync(stateFile), '退出时写入状态文件 launcher-services.json')
   const svc = JSON.parse(readFileSync(stateFile, 'utf8'))
   ok(svc.dsh === true && svc.llm === false, `状态内容 dsh=${svc.dsh} llm=${svc.llm}`)
+
+  // 4.1.5 重启续跑：预置续跑意图，第二实例恢复 dsh 后应自动向该会话发「继续」
+  const resumeFile = join(FIXTURE, 'data', 'launcher-resume.json')
+  writeFileSync(resumeFile, JSON.stringify({ sessionId: 'session-resume-test', text: '继续' }, null, 2))
 
   // 第二实例（独立进程，模拟 relaunch 后的新实例）
   const childLog = join(here, 'selftest.child.log')
@@ -266,7 +298,22 @@ step('⑨ service-state restore')
   }, 30000)
   ok(restored !== null, '第二实例自动恢复 dsh（状态文件被消费）')
   ok(!existsSync(stateFile), '状态文件已消费（删除）')
-  if (!restored) {
+  // 重启续跑：第二实例应向目标会话发出 session/prompt（mock dsh 落盘 rpc-calls.log）
+  const rpcLog = join(FIXTURE, 'rpc-calls.log')
+  const prompted = await waitFor(async () => {
+    if (!existsSync(rpcLog)) return null
+    const lines = readFileSync(rpcLog, 'utf8').split('\n').filter(Boolean)
+    const hit = lines.map(l => { try { return JSON.parse(l) } catch { return null } })
+      .find(x => x?.endpoint === 'session/prompt' && x?.msg?.payload?.args?.request?.sessionId === 'session-resume-test')
+    return hit ?? null
+  }, 30000)
+  ok(prompted !== null, '第二实例恢复 dsh 后自动发送「继续」（session/prompt 已送达）')
+  if (prompted) {
+    ok(prompted.msg.payload.args.request.content?.[0]?.text === '继续', '续跑消息内容为「继续」')
+    ok(prompted.msg.type === 'client-request' && prompted.msg.method === 'session/prompt', 'RPC 封装正确（client-request / method 与路径一致）')
+  }
+  ok(!existsSync(resumeFile), '续跑意图文件已消费（删除）')
+  if (!restored || !prompted) {
     try { appendFileSync(childLog, childBuf) } catch { /* 忽略 */ }
   }
   spawnSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true })

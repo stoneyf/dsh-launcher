@@ -21,7 +21,7 @@ import { fileURLToPath } from 'node:url'
 import { spawn } from 'node:child_process'
 import {
   DIRS, ROOT, readConfig, writeConfig, ensureDirs, logPath, modelPath, syncSettings, tcpPortBusy,
-  waitPortFree, LAUNCHER_VERSION, resolveCtx, resolveMaxTokens, probeModel, setAutoStart, isAutoStart,
+  waitPortFree, sleep, LAUNCHER_VERSION, resolveCtx, resolveMaxTokens, probeModel, setAutoStart, isAutoStart,
 } from './core.mjs'
 import * as services from './services.mjs'
 import * as gpu from './gpu.mjs'
@@ -431,10 +431,27 @@ route('POST', /^\/api\/launcher\/switch$/, async (req, res) => {
 // 新实例启动时自动恢复 —— dsh 靠浏览器 cookie（data\.credentials.yaml）
 // 还原 agent 会话，正在对话的窗口刷新后继续。
 const SERVICE_STATE_FILE = join(DIRS.data, 'launcher-services.json')
+// 重启续跑意图：重启请求里指定（或默认取最近更新的）会话，新实例恢复 dsh 后自动发「继续」
+const RESUME_STATE_FILE = join(DIRS.data, 'launcher-resume.json')
 
-route('POST', /^\/api\/launcher\/restart$/, (req, res) => {
+/** 从重启请求体解析续跑意图：显式 sessionId 优先，缺省取最近更新过的会话。 */
+function buildResumeIntent(body) {
+  let sessionId = String(body?.sessionId ?? '').trim()
+  if (!sessionId) sessionId = sessions.listSessions()[0]?.id ?? ''
+  if (!sessionId) return null
+  const text = String(body?.resumeText ?? body?.text ?? '').trim().slice(0, 500) || '继续'
+  return { sessionId, text }
+}
+
+route('POST', /^\/api\/launcher\/restart$/, async (req, res) => {
+  let intent = null
+  try {
+    const body = await readBody(req)
+    intent = buildResumeIntent(body)
+    if (intent) writeFileSync(RESUME_STATE_FILE, JSON.stringify(intent, null, 2), 'utf8')
+  } catch (error) { console.warn('[launcher] 写入重启续跑意图失败:', error.message) }
   const r = launcherUpdate.requestRelaunch()
-  sendJson(res, r?.ok === false ? 500 : 200, r ?? { ok: true })
+  sendJson(res, r?.ok === false ? 500 : 200, { ...(r ?? { ok: true }), resume: intent?.sessionId ?? null })
 })
 
 route('POST', /^\/api\/quit$/, (req, res) => {
@@ -570,6 +587,70 @@ async function ensureAutoStartServices() {
   } catch (error) { console.warn('[launcher] 开机自启失败:', error.message) }
 }
 
+// ---------- 重启续跑（4.1.5）：新实例恢复 dsh 后，自动向指定会话发「继续」 ----------
+
+/**
+ * dsh web RPC（无浏览器直连）：
+ *  1) 认证：GET <base>/?token=<dsh token> → 303 + Set-Cookie（launch token 只在此处交换）；
+ *  2) 调用：POST <base>/api/<endpoint>，带 cookie，
+ *     body = { type:'client-request', rpcId, method:<endpoint>, payload }（endpoint 取自 URL 路径）。
+ */
+async function dshRpc(dshUrl, endpoint, payload) {
+  const u = new URL(dshUrl)
+  const base = `${u.protocol}//${u.host}`
+  const exchange = await fetch(`${base}/?token=${encodeURIComponent(u.searchParams.get('token') ?? '')}`, { redirect: 'manual' })
+  let cookies = []
+  try { cookies = exchange.headers.getSetCookie?.() ?? [] } catch { cookies = [] }
+  if (cookies.length === 0) {
+    const raw = exchange.headers.get('set-cookie')
+    if (raw) cookies = raw.split(',').map(c => c.trim())
+  }
+  const cookie = cookies.map(c => c.split(';')[0].trim()).filter(Boolean).join('; ')
+  if (!cookie) throw new Error(`dsh 认证交换失败（HTTP ${exchange.status}）`)
+  const body = JSON.stringify({ type: 'client-request', rpcId: crypto.randomUUID(), method: endpoint, payload })
+  const r = await fetch(`${base}/api/${endpoint}`, { method: 'POST', headers: { 'content-type': 'application/json', cookie }, body })
+  let data = null
+  try { data = await r.json() } catch { /* 非 JSON 响应 */ }
+  if (data?.result?.ok === true) return data.result.value
+  const err = data?.result?.error
+  throw new Error(err ? `dsh ${endpoint}：${err.code} ${err.message}` : `dsh ${endpoint} HTTP ${r.status}`)
+}
+
+/** 消费续跑意图：等 dsh 就绪（最长 4 分钟）后向指定会话发一条用户消息。 */
+async function consumeResumeIntent() {
+  let intent = null
+  try {
+    if (existsSync(RESUME_STATE_FILE)) {
+      intent = JSON.parse(readFileSync(RESUME_STATE_FILE, 'utf8'))
+      unlinkSync(RESUME_STATE_FILE)
+    }
+  } catch { return }
+  if (!intent?.sessionId) return
+  const text = String(intent.text ?? '').trim() || '继续'
+  console.log(`[launcher] 重启续跑：${intent.sessionId} ← 「${text}」`)
+  const deadline = Date.now() + 240000
+  let lastError = null
+  while (Date.now() < deadline) {
+    try {
+      const st = services.dshStatus()
+      if (!st.running || !st.url) { lastError = 'dsh 尚未就绪'; await sleep(3000); continue }
+      const value = await dshRpc(st.url, 'session/prompt', {
+        args: { request: { requestId: crypto.randomUUID(), sessionId: intent.sessionId, mode: 'queue', content: [{ type: 'text', text }] } },
+      })
+      console.log(`[launcher] 续跑消息已送达（accepted=${value?.accepted === true}）`)
+      return
+    } catch (error) {
+      lastError = error.message
+      if (/not-found/i.test(error.message)) {
+        console.warn(`[launcher] 重启续跑失败（会话已不存在）: ${error.message}`)
+        return
+      }
+    }
+    await sleep(3000)
+  }
+  console.warn(`[launcher] 重启续跑超时（等待 dsh 就绪 240s 未果）: ${lastError}`)
+}
+
 export function startServer({ port = 0, onRelaunch = null } = {}) {
   ensureDirs()
   if (onRelaunch) launcherUpdate.setRelaunch(onRelaunch)
@@ -605,6 +686,8 @@ export function startServer({ port = 0, onRelaunch = null } = {}) {
     server.listen(port, '127.0.0.1', () => {
       setTimeout(async () => {
         const restored = await consumeServiceState()
+        // 重启续跑（4.1.5）：有续跑意图时，等 dsh 就绪后自动向指定会话发「继续」
+        void consumeResumeIntent()
         // 静默模式 = 开机/静默拉起：干净开机（无状态文件）时，按「开机自动启动服务」选项启动服务
         if (!restored && process.argv.includes('--silent')) void ensureAutoStartServices()
       }, 1000)

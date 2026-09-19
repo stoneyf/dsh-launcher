@@ -66,6 +66,9 @@ export async function listGitHubVersions() {
 }
 
 export const CHANGELOG = `
+4.1.5
+    · 重启续跑：重启 Harness 不再把进行中的对话停在那。重启请求可指定目标会话（缺省取最近更新过的对话），
+      新实例恢复 dsh 就绪后，启动器自动通过 dsh 网页协议向该会话发一条「继续」，agent 接着跑、无需人工点一下
 4.1.4
     · 开机带起服务改为独立选项：设置页新增「开机自动启动服务」开关（与「开机自动启动」分开控制），
       勾选后开机静默模式会自动启动本地大模型和 Harness
