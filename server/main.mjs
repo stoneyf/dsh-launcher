@@ -616,8 +616,10 @@ async function dshRpc(dshUrl, endpoint, payload) {
   throw new Error(err ? `dsh ${endpoint}：${err.code} ${err.message}` : `dsh ${endpoint} HTTP ${r.status}`)
 }
 
-/** 消费续跑意图：等 dsh 就绪（最长 4 分钟）后向指定会话发一条用户消息。 */
-async function consumeResumeIntent() {
+/** 消费续跑意图：等 dsh 就绪（最长 4 分钟）后向目标会话发一条用户消息。
+ *  目标优先级：显式意图文件（重启请求带 sessionId/resumeText）＞ 重启路径缺省（最近更新的会话）。
+ *  缺省兜底很重要：重启前运行的旧实例若是老版本代码（还没写意图文件），新实例也能照常续跑最近会话。 */
+async function consumeResumeIntent(restarted = false) {
   let intent = null
   try {
     if (existsSync(RESUME_STATE_FILE)) {
@@ -625,6 +627,10 @@ async function consumeResumeIntent() {
       unlinkSync(RESUME_STATE_FILE)
     }
   } catch { return }
+  if (!intent?.sessionId && restarted) {
+    const latest = sessions.listSessions()[0]
+    if (latest?.id) intent = { sessionId: latest.id, text: '继续' }
+  }
   if (!intent?.sessionId) return
   const text = String(intent.text ?? '').trim() || '继续'
   console.log(`[launcher] 重启续跑：${intent.sessionId} ← 「${text}」`)
@@ -686,8 +692,8 @@ export function startServer({ port = 0, onRelaunch = null } = {}) {
     server.listen(port, '127.0.0.1', () => {
       setTimeout(async () => {
         const restored = await consumeServiceState()
-        // 重启续跑（4.1.5）：有续跑意图时，等 dsh 就绪后自动向指定会话发「继续」
-        void consumeResumeIntent()
+        // 重启续跑（4.1.5）：重启路径（上实例有运行中的服务）时，等 dsh 就绪后自动向目标会话发「继续」
+        void consumeResumeIntent(restored)
         // 静默模式 = 开机/静默拉起：干净开机（无状态文件）时，按「开机自动启动服务」选项启动服务
         if (!restored && process.argv.includes('--silent')) void ensureAutoStartServices()
       }, 1000)

@@ -322,6 +322,48 @@ step('⑨ service-state restore')
   process.exit = realExit
 }
 
+// ---------- 9b. 重启续跑缺省路径（无意图文件 → 最近更新的会话） ----------
+step('⑨b resume default (no intent file)')
+{
+  // 上一实例被强杀（无干净退出）→ 手动补状态文件，模拟「上实例有运行中服务」的重启路径；
+  // 不写续跑意图文件（模拟旧版本实例没写文件的首次重启场景），⑧b 已建 prof/session-old + prof/session-new（new 更新）
+  const stateFile2 = join(FIXTURE, 'data', 'launcher-services.json')
+  writeFileSync(stateFile2, JSON.stringify({ dsh: true, llm: false }))
+  const childLog2 = join(here, 'selftest.child2.log')
+  const child2 = spawn(process.execPath, [join(here, '..', 'server', 'main.mjs'), '--port=7998'], {
+    cwd: FIXTURE, env: { ...process.env, DSH_LAUNCHER_ROOT: FIXTURE }, windowsHide: true,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+  let child2Buf = ''
+  child2.stdout.on('data', d => { child2Buf += d.toString() })
+  child2.stderr.on('data', d => { child2Buf += d.toString() })
+  const up2 = await waitFor(async () => {
+    return (await fetch('http://127.0.0.1:7998/api/ping').then(() => true).catch(() => false))
+  }, 15000)
+  ok(up2 === true, '第二实例 B 已启动 :7998（无意图文件）')
+  const childToken2 = readFileSync(join(FIXTURE, 'logs', 'launcher.token'), 'utf8').trim()
+  const restored2 = await waitFor(async () => {
+    const res = await fetch('http://127.0.0.1:7998/api/status', { headers: { Authorization: `Bearer ${childToken2}` } })
+    const st = await res.json().catch(() => null)
+    return st?.services?.dsh?.running ? st.services.dsh : null
+  }, 30000)
+  ok(restored2 !== null, '第二实例 B 自动恢复 dsh（状态文件被消费）')
+  const rpcLog2 = join(FIXTURE, 'rpc-calls.log')
+  const hit2 = await waitFor(async () => {
+    if (!existsSync(rpcLog2)) return null
+    const lines = readFileSync(rpcLog2, 'utf8').split('\n').filter(Boolean)
+    return lines.map(l => { try { return JSON.parse(l) } catch { return null } })
+      .find(x => x?.endpoint === 'session/prompt' && x?.msg?.payload?.args?.request?.sessionId === 'session-new') ?? null
+  }, 30000)
+  ok(hit2 !== null, '无意图文件 → 缺省续跑最近更新的会话（session/prompt → session-new）')
+  if (hit2) ok(hit2.msg.payload.args.request.content?.[0]?.text === '继续', '缺省续跑文案「继续」')
+  spawnSync('taskkill', ['/PID', String(child2.pid), '/T', '/F'], { windowsHide: true })
+  await sleep(300)
+  if (!restored2 || !hit2) {
+    try { appendFileSync(childLog2, child2Buf) } catch { /* 忽略 */ }
+  }
+}
+
 console.log(`\n结果：${passed} 通过 / ${failed} 失败`)
 step(`RESULT ${passed} passed / ${failed} failed`)
 process.exit(failed === 0 ? 0 : 1)
