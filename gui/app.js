@@ -7,6 +7,7 @@ const $ = sel => document.querySelector(sel)
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
 
 let status = null
+let activeModel = null      // 当前激活模型文件（status.models 中 active=true 的项；主页/维护页共用）
 let activeLogTab = 'llm'
 let logSource = null
 let updateBusy = false
@@ -117,6 +118,12 @@ function renderRestartProgress(svc, info, progressEl, btnRestart, btnStart, btnS
 async function refreshStatus() {
   try {
     status = await api('GET', '/api/status')
+  } catch {
+    $('#mini-status').textContent = '后端不可用'
+    return
+  }
+  activeModel = (status.models ?? []).find(m => m.active) ?? null
+  try {
     renderHome()
     renderMaintain()
     if (!status.services.llm.running && !status.services.dsh.running) {
@@ -128,7 +135,8 @@ async function refreshStatus() {
       $('#mini-status').textContent = parts.join(' · ') || '—'
     }
   } catch (error) {
-    $('#mini-status').textContent = '后端不可用'
+    // 渲染异常也要看得见，别误报成「后端不可用」
+    $('#mini-status').textContent = `渲染出错：${error.message}`
   }
 }
 
@@ -895,7 +903,6 @@ function renderMaintain() {
   } else {
     add('NVIDIA GPU', 'warn', '未检测到 NVIDIA 显卡（CPU 推理可用但较慢）')
   }
-  const activeModel = status.models.find(m => m.active)
   add('当前模型文件', activeModel ? 'ok' : 'bad', activeModel ? `${activeModel.name}（${fmtBytes(activeModel.size)}）` : '未安装，请到模型页下载')
   add('LLM 端口 8080', status.ports.llm && !status.services.llm.running ? 'warn' : 'ok', status.ports.llm && !status.services.llm.running ? '被其他程序占用，请在设置中更换 LLM_PORT' : status.ports.llm ? '本地大模型监听中' : '空闲')
   add('Harness 端口', status.ports.dsh && !status.services.dsh.running ? 'warn' : 'ok', status.ports.dsh && !status.services.dsh.running ? '被占用（启动时自动顺延）' : status.ports.dsh ? '监听中' : '空闲')

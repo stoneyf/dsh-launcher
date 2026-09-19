@@ -156,9 +156,9 @@ function buildNum(tag) {
   return m ? Number(m[1]) : NaN
 }
 
-/** 是否可更新：latest 语义上严格大于 current。 */
+/** 是否可更新：latest 语义上严格大于 current；未检查过（无 latest）返回 null（未知，别当成"已是最新"）。 */
 function hasNewer(current, latest) {
-  if (!latest) return false
+  if (!latest) return null
   const curNum = buildNum(current)
   const latNum = buildNum(latest)
   if (!Number.isNaN(curNum) && !Number.isNaN(latNum)) return latNum > curNum
