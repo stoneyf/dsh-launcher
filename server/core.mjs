@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
 import net from 'node:net'
 
-export const LAUNCHER_VERSION = '4.1.3'
+export const LAUNCHER_VERSION = '4.1.4'
 
 const serverDir = dirname(fileURLToPath(import.meta.url))
 /** 根目录：默认取 server 上一级；DSH_LAUNCHER_ROOT 可覆盖（与传给 dsh 进程的同名变量一致，便于测试与外部发现）。 */
@@ -52,6 +52,7 @@ export const CONFIG_DEFAULTS = {
   HUB_MIRROR: 'https://hf-mirror.com',
   THEME: 'dark',
   AUTO_START: '0',
+  AUTO_START_SERVICES: '0',
   LAUNCHER_UPDATE_URL: '',
   DOWNLOAD_PROXY: '',
   DIRECT_HOSTS: '',

@@ -229,7 +229,12 @@
         <div class="form-row">
           <label>开机自动启动</label>
           <label class="checkbox-label"><input type="checkbox" id="autostart-toggle"></label>
-          <span class="form-hint">开机后后台静默运行（只进托盘，不弹窗口）并自动启动本地大模型和 Harness；关窗也收进托盘、服务不停</span>
+          <span class="form-hint">开机后后台静默运行（只进托盘，不弹窗口）；关窗也收进托盘、服务不停</span>
+        </div>
+        <div class="form-row">
+          <label>开机自动启动服务</label>
+          <label class="checkbox-label"><input type="checkbox" name="AUTO_START_SERVICES"></label>
+          <span class="form-hint">开机时自动启动本地大模型和 Harness（需「开机自动启动」已开启；点下方「保存」生效）</span>
         </div>
         <div class="form-row"><label>启动器端口 LAUNCHER_PORT</label><input name="LAUNCHER_PORT" type="number"></div>
         <div class="form-row"><label>模型广场镜像 HUB_MIRROR</label><input name="HUB_MIRROR"></div>
@@ -288,7 +293,7 @@
           <li>一键启动 / 停止 / 重启 本地大模型（llama.cpp）与 Harness (dsh)；关窗收进托盘，服务后台不停</li>
           <li>模型广场：搜索、下载、导入本地模型；按本机硬件推荐合适的量化</li>
           <li>版本管理：harness / llama / node / 启动器 的更新、回滚、在已装版本与 GitHub 历史版本间切换</li>
-          <li>开机自启（后台静默 + 托盘，自动启动本地大模型和 Harness）、更新提示、对话管理（逐条删除 / 一键清空 / 打开文件夹）</li>
+          <li>开机自启（后台静默 + 托盘；可单独勾选「开机自动启动服务」自动拉起本地大模型和 Harness）、更新提示、对话管理（逐条删除 / 一键清空 / 打开文件夹）</li>
           <li>环境诊断、GPU 显存监控、控制台实时日志、深浅色主题</li>
         </ul>
       </div>

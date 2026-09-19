@@ -545,12 +545,13 @@ async function consumeServiceState() {
   return hadFile
 }
 
-// 开机自启：静默模式（--silent）下「开机自动启动」已开启、且没有服务状态文件
-// （干净开机，非「重启生效」）时，自动拉起本地大模型 + dsh。
-// 有状态文件时仍按「恢复退出前运行中的」执行（用户手动停掉的服务不会被误拉起）。
+// 开机自启带起服务：静默模式（--silent，即开机/静默拉起）下，「开机自动启动服务」
+// （AUTO_START_SERVICES，独立选项）已勾选、且没有服务状态文件（干净开机，非「重启生效」）
+// 时，自动拉起本地大模型 + dsh。有状态文件时仍按「恢复退出前运行中的」执行，
+// 用户手动停掉的服务不会被误拉起。
 async function ensureAutoStartServices() {
   try {
-    if (!isAutoStart()) return
+    if (readConfig().AUTO_START_SERVICES !== '1') return
     const llmRunning = (await services.llmStatus()).running === true
     const dshRunning = services.dshStatus().running === true
     if (!llmRunning) {
@@ -604,7 +605,7 @@ export function startServer({ port = 0, onRelaunch = null } = {}) {
     server.listen(port, '127.0.0.1', () => {
       setTimeout(async () => {
         const restored = await consumeServiceState()
-        // 静默模式 = 开机/静默拉起：干净开机（无状态文件）时自动启动两个服务
+        // 静默模式 = 开机/静默拉起：干净开机（无状态文件）时，按「开机自动启动服务」选项启动服务
         if (!restored && process.argv.includes('--silent')) void ensureAutoStartServices()
       }, 1000)
       resolveServer({ server, port: server.address().port, token })
