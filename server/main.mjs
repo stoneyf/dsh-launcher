@@ -516,16 +516,19 @@ export async function shutdown(reason = 'shutdown') {
   setTimeout(() => process.exit(0), 500)
 }
 
-// 新实例启动后消费服务状态文件：自动拉起上次退出前运行中的服务
+// 新实例启动后消费服务状态文件：自动拉起上次退出前运行中的服务。
+// 返回是否存在状态文件（true = 「重启生效/手动重启」路径，状态优先）。
 async function consumeServiceState() {
   let svc = null
+  let hadFile = false
   try {
     if (existsSync(SERVICE_STATE_FILE)) {
+      hadFile = true
       svc = JSON.parse(readFileSync(SERVICE_STATE_FILE, 'utf8'))
       unlinkSync(SERVICE_STATE_FILE)
     }
   } catch { svc = null }
-  if (!svc) return
+  if (!svc) return hadFile
   console.log(`[launcher] 自动恢复服务: llm=${!!svc.llm} dsh=${!!svc.dsh}`)
   if (svc.llm) services.startLlm().catch(error => console.warn('[launcher] 自动恢复 llm 失败:', error.message))
   if (svc.dsh) {
@@ -539,6 +542,31 @@ async function consumeServiceState() {
       .then(() => console.log('[launcher] 自动恢复 dsh 成功'))
       .catch(error => console.warn('[launcher] 自动恢复 dsh 失败:', error.message))
   }
+  return hadFile
+}
+
+// 开机自启：静默模式（--silent）下「开机自动启动」已开启、且没有服务状态文件
+// （干净开机，非「重启生效」）时，自动拉起本地大模型 + dsh。
+// 有状态文件时仍按「恢复退出前运行中的」执行（用户手动停掉的服务不会被误拉起）。
+async function ensureAutoStartServices() {
+  try {
+    if (!isAutoStart()) return
+    const llmRunning = (await services.llmStatus()).running === true
+    const dshRunning = services.dshStatus().running === true
+    if (!llmRunning) {
+      console.log('[launcher] 开机自启：启动本地大模型……')
+      services.startLlm().catch(error => console.warn('[launcher] 开机自启 llm 失败:', error.message))
+    }
+    if (!dshRunning) {
+      const cfg = readConfig()
+      const dshPort = Number(cfg.DSH_PORT) || 3080
+      const free = await waitPortFree(dshPort, 15000)
+      console.log(`[launcher] 开机自启：启动 dsh（端口 ${dshPort} ${free ? '已空闲' : '仍被占用'}）……`)
+      services.startDsh({ openBrowser: false, allowPortFallback: false })
+        .then(() => console.log('[launcher] 开机自启 dsh 成功'))
+        .catch(error => console.warn('[launcher] 开机自启 dsh 失败:', error.message))
+    }
+  } catch (error) { console.warn('[launcher] 开机自启失败:', error.message) }
 }
 
 export function startServer({ port = 0, onRelaunch = null } = {}) {
@@ -574,7 +602,11 @@ export function startServer({ port = 0, onRelaunch = null } = {}) {
   })
   return new Promise(resolveServer => {
     server.listen(port, '127.0.0.1', () => {
-      setTimeout(() => consumeServiceState(), 1000)
+      setTimeout(async () => {
+        const restored = await consumeServiceState()
+        // 静默模式 = 开机/静默拉起：干净开机（无状态文件）时自动启动两个服务
+        if (!restored && process.argv.includes('--silent')) void ensureAutoStartServices()
+      }, 1000)
       resolveServer({ server, port: server.address().port, token })
     })
   })

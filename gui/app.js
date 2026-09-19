@@ -725,7 +725,7 @@ function bindAutostart() {
   toggle.addEventListener('change', async () => {
     try {
       const r = await api('POST', '/api/autostart', { enabled: toggle.checked })
-      notice(r.enabled ? '开机自启已开启（开机后台静默运行，托盘图标）' : '开机自启已关闭')
+      notice(r.enabled ? '开机自启已开启（开机后台静默启动本地大模型 + Harness，托盘图标）' : '开机自启已关闭')
     } catch (e) {
       notice(`设置失败：${e.message}`, true)
       loadAutostart()

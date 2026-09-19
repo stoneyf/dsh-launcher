@@ -66,6 +66,9 @@ export async function listGitHubVersions() {
 }
 
 export const CHANGELOG = `
+4.1.3
+    · 开机自启带起服务：开启「开机自动启动」后，开机静默模式不再只进托盘，还会自动启动本地大模型和 Harness
+      （仅干净开机时；「重启生效」仍优先按退出前状态恢复，手动停掉的服务不会被误拉起）
 4.1.2
     · 修复「打开目录」按钮点了没反应：打开目录的助手脚本原来用「分离式 PowerShell」方式启动，
       Win11 24H2 上这种启动法会让 powershell 静默退出（exit 0、脚本根本不执行）；已去掉 detached 并加启动失败日志
