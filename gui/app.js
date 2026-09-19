@@ -14,7 +14,6 @@ let updateBusy = false
 const downloadBars = new Map() // fileName -> {outer, inner, label}
 const downloadSpeed = new Map() // fileName -> {lastBytes, lastTs, speed}
 let componentVersions = {}     // key(harness|llama|node) -> {current, options, notes}
-let sessionsData = null        // { dir, sessions: [] }
 let launcherVersionsData = null // { current, installed, github, githubError }
 let launcherInfoCache = null   // GET /api/launcher/info 的缓存（用于更新提示横幅）
 
@@ -776,39 +775,6 @@ async function loadComponentVersions() {
   }
 }
 
-// ---------- 对话管理 ----------
-async function loadSessions() {
-  try {
-    sessionsData = await api('GET', '/api/sessions')
-    renderConversations()
-  } catch { /* 忽略 */ }
-}
-function renderConversations() {
-  const list = $('#conv-list')
-  const count = $('#conv-count')
-  if (!list) return
-  const sessions = sessionsData?.sessions ?? []
-  if (count) count.textContent = `${sessions.length} 个`
-  if (sessions.length === 0) { list.innerHTML = '<span class="muted">暂无对话</span>'; return }
-  list.innerHTML = ''
-  for (const s of sessions) {
-    const row = document.createElement('div')
-    row.className = 'conv-row'
-    const date = s.updatedAt ? new Date(s.updatedAt).toLocaleString() : '—'
-    row.innerHTML = `
-      <span class="conv-id" title="${esc(s.id)}">${esc(s.id.slice(0, 8))}</span>
-      <span class="conv-date">${esc(date)}</span>
-      <span class="conv-size">${fmtBytes(s.size)}</span>
-      <button class="btn btn-xs conv-del">删除</button>`
-    row.querySelector('.conv-del').addEventListener('click', async () => {
-      if (!confirm(`确认删除这条对话（${s.id.slice(0, 8)}…）？`)) return
-      try { await api('DELETE', `/api/sessions/${encodeURIComponent(s.id)}`) } catch (e) { notice(e.message, true) }
-      await loadSessions()
-    })
-    list.appendChild(row)
-  }
-}
-
 // ---------- 启动器版本（切换下拉：已安装 + GitHub 历史） ----------
 async function loadLauncherVersionsData() {
   try {
@@ -1131,13 +1097,6 @@ function bindEvents() {
   $('#btn-copy-launcher-url').addEventListener('click', async () => {
     try { await navigator.clipboard.writeText(location.origin + location.pathname); notice('已复制启动器地址') } catch { notice('复制失败', true) }
   })
-  // 对话管理
-  $('#btn-conv-refresh').addEventListener('click', loadSessions)
-  $('#btn-conv-clear').addEventListener('click', async () => {
-    if (!confirm('确认清空全部对话？此操作不可撤销。')) return
-    try { const r = await api('POST', '/api/sessions/clear'); notice(`已清空 ${r.deleted} 条对话`) } catch (e) { notice(e.message, true) }
-    await loadSessions()
-  })
   // 本地模型快捷卡片
   $('#btn-models-quick-go').addEventListener('click', () => goPage('models'))
   // 开机自启
@@ -1291,7 +1250,6 @@ async function init() {
     await loadInstalled()
     renderPresets()
     loadLauncherInfo()
-    loadSessions()
     loadComponentVersions()
     loadLauncherVersionsData()
     loadDownloadBars()

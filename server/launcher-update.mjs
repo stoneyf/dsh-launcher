@@ -66,6 +66,10 @@ export async function listGitHubVersions() {
 }
 
 export const CHANGELOG = `
+4.1.6
+    · 启动器去掉「对话管理」，删除功能搬到 Harness 网页端：
+      右侧边栏新增「对话」标签（全部对话列表，逐条删除/一键清空），每个对话标题栏新增删除按钮；
+      正在运行中的对话拒绝删除，删除后左侧对话树自动刷新、当前对话被删时自动跳到最近的其他对话
 4.1.5
     · 重启续跑：重启器重启后自动续跑任务——新实例恢复 dsh 就绪后，通过 dsh 网页协议向目标会话自动发「继续」，agent 接着跑、无需人工点一下。
       重启请求可指定目标会话/文案（POST /api/launcher/restart body {sessionId, resumeText}），缺省取最近更新过的对话（旧实例是旧版本、没写意图文件时也照常生效）

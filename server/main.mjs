@@ -340,15 +340,6 @@ route('GET', /^\/api\/downloads\/events$/, (req, res) => {
   res.on('close', () => downloads.downloadEvents.off('task', onTask))
 })
 
-// ---------- 对话管理 ----------
-route('GET', /^\/api\/sessions$/, (req, res) => sendJson(res, 200, { dir: sessions.SESSIONS_DIR, sessions: sessions.listSessions() }))
-route('DELETE', /^\/api\/sessions\/([^/]+)$/, (req, res, m) => {
-  try { sendJson(res, 200, sessions.deleteSession(decodeURIComponent(m[1]))) } catch (error) { sendError(res, 400, error.message) }
-})
-route('POST', /^\/api\/sessions\/clear$/, (req, res) => {
-  try { sendJson(res, 200, sessions.clearSessions()) } catch (error) { sendError(res, 400, error.message) }
-})
-
 route('POST', /^\/api\/chat\/test$/, async (req, res) => {
   try {
     const body = await readBody(req)

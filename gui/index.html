@@ -110,19 +110,6 @@
             <div class="kv"><span>总量</span><b id="disk-total">—</b></div>
           </div>
         </div>
-      </div>
-      <div class="row2">
-        <div class="card" id="card-conversations">
-          <div class="card-head"><span class="card-title">对话管理</span><span class="badge" id="conv-count">—</span></div>
-          <div class="card-body">
-            <div id="conv-list" class="conv-list">加载中……</div>
-          </div>
-          <div class="card-actions">
-            <button class="btn btn-sm" id="btn-conv-refresh">刷新</button>
-            <button class="btn btn-sm btn-danger-ghost" id="btn-conv-clear">清空全部</button>
-            <button class="btn btn-sm" data-dir="sessions">打开对话文件夹</button>
-          </div>
-        </div>
         <div class="card" id="card-models-quick">
           <div class="card-head"><span class="card-title">本地模型</span></div>
           <div class="card-body">
@@ -293,7 +280,7 @@
           <li>一键启动 / 停止 / 重启 本地大模型（llama.cpp）与 Harness (dsh)；关窗收进托盘，服务后台不停</li>
           <li>模型广场：搜索、下载、导入本地模型；按本机硬件推荐合适的量化</li>
           <li>版本管理：harness / llama / node / 启动器 的更新、回滚、在已装版本与 GitHub 历史版本间切换</li>
-          <li>开机自启（后台静默 + 托盘；可单独勾选「开机自动启动服务」自动拉起本地大模型和 Harness）、更新提示、对话管理（逐条删除 / 一键清空 / 打开文件夹）</li>
+          <li>开机自启（后台静默 + 托盘；可单独勾选「开机自动启动服务」自动拉起本地大模型和 Harness）、更新提示；对话删除已移到 Harness 网页端（右侧边栏「对话」标签）</li>
           <li>环境诊断、GPU 显存监控、控制台实时日志、深浅色主题</li>
         </ul>
       </div>
