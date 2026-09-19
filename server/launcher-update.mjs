@@ -66,19 +66,19 @@ export async function listGitHubVersions() {
 }
 
 export const CHANGELOG = `
+4.1.2
+    · 修复「打开目录」按钮点了没反应：打开目录的助手脚本原来用「分离式 PowerShell」方式启动，
+      Win11 24H2 上这种启动法会让 powershell 静默退出（exit 0、脚本根本不执行）；已去掉 detached 并加启动失败日志
+4.1.1
+    · 修复维护页「环境诊断/版本管理」空白：主页引用了只定义在维护页的变量 activeModel，状态刷新一抛异常就整体误报「后端不可用」；现改为状态里取、跨页共用，渲染报错显示真实错误
+    · 修复版本管理「最新 未检查 · 已是最新」矛盾：未检查过时 updateAvailable 返回 null（未知）而非 false，不再提前显示「已是最新」/禁用更新按钮
+    · README 更新日志补上缺失的 4.1.0 条目
 4.1.0
     · 修复 dsh 起不来（端口被锁）：web profile 的 webserver 配置会在 patch 层覆盖 dsh web --port，
       导致改 DSH_PORT 不生效、端口冲突时回退也撞回原端口（EADDRINUSE）。现在启动前自动把该段 port:
       同步为实际端口（只改这一行，其余不动）
     · 修复 dsh 启动失败时看不到真实原因：dsh「先监听、随后崩溃退出」时内部状态已清空，
       原先会抛 TypeError 把真正的错误盖掉，现在直接报出原始错误
-4.1.1
-    · 修复维护页「环境诊断/版本管理」空白：主页引用了只定义在维护页的变量 activeModel，状态刷新一抛异常就整体误报「后端不可用」；现改为状态里取、跨页共用，渲染报错显示真实错误
-    · 修复版本管理「最新 未检查 · 已是最新」矛盾：未检查过时 updateAvailable 返回 null（未知）而非 false，不再提前显示「已是最新」/禁用更新按钮
-    · 内置更新日志补上缺失的 4.1.0 条目
-4.1.0
-    · 修复「dsh 起不来」：web profile 的 cordis.patch.yml 里 webserver 段会覆盖 dsh web --port，改 DSH_PORT 不生效、端口回退也撞回原端口；启动前把该段 port 同步为实际端口
-    · 修复启动失败报错：dsh「先监听后崩溃」时 state.dsh 已被清空，原先 state.dsh.url 赋值抛 TypeError 掩盖真实原因
 4.0.0
     · 全新图标：exe / 窗口 / 任务栏统一为深蓝底白色闪电
     · 系统托盘：关窗收进托盘不停服务，LLM 后台继续运行；托盘菜单可打开/退出

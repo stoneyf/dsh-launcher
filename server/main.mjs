@@ -13,7 +13,7 @@
 import http from 'node:http'
 import crypto from 'node:crypto'
 import {
-  existsSync, readFileSync, writeFileSync, statSync, openSync, readSync, closeSync,
+  existsSync, readFileSync, writeFileSync, appendFileSync, statSync, openSync, readSync, closeSync,
   mkdirSync, readdirSync, unlinkSync, copyFileSync, statfsSync,
 } from 'node:fs'
 import { extname, join, basename, resolve, dirname } from 'node:path'
@@ -456,9 +456,15 @@ route('POST', /^\/api\/open-dir$/, async (req, res) => {
     if (!dir) throw new Error('无效目录')
     if (existsSync(OPEN_DIR_HELPER)) {
       const ps = process.env.SystemRoot ? join(process.env.SystemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe') : 'powershell.exe'
-      spawn(ps, ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', OPEN_DIR_HELPER, dir, OPEN_DIR_HELPER_LOG], {
-        detached: true, stdio: 'ignore', windowsHide: true,
-      }).unref()
+      // 注意：不能用 detached —— DETACHED_PROCESS + 无 stdio 启动的 powershell.exe
+      // 在本机（Win11 24H2）会静默退出（exit 0、脚本根本不执行），助手脚本就永远不会跑。
+      const child = spawn(ps, ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', OPEN_DIR_HELPER, dir, OPEN_DIR_HELPER_LOG], {
+        stdio: 'ignore', windowsHide: true,
+      })
+      child.on('error', e => {
+        try { appendFileSync(OPEN_DIR_HELPER_LOG, `${new Date().toISOString()} spawn failed: ${e.message}\n`) } catch { /* 忽略 */ }
+      })
+      child.unref()
     } else {
       // 回退：ShellExecute（start）。窗口可能不前置，但至少能打开。
       spawn(process.env.ComSpec ?? 'cmd.exe', ['/c', 'start', '', dir], {
