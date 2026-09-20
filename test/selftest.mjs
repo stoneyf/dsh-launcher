@@ -364,6 +364,63 @@ step('⑨b resume default (no intent file)')
   }
 }
 
+// ---------- 10. 开机自启服务锁（4.1.8）：跨实例互斥 ----------
+// 免登录开机后会有两个启动器实例（SYSTEM 开机实例 + 登录实例），二者都会跑到
+// ensureAutoStartServices；无锁时各拉一份 llama-server，同一模型加载两次 → 显存争抢
+// →「切本地模型卡住」。这里验证：锁已被持有（未过期）时，第二个实例会跳过带服务。
+console.log('⑩ 开机自启服务锁（跨实例互斥）')
+step('⑩ autostart lock start')
+{
+  const lockFile = join(FIXTURE, 'logs', 'autostart-services.lock')
+  mkdirSync(join(FIXTURE, 'logs'), { recursive: true })
+  // 模拟「另一个实例正在带服务」：写入未过期的锁
+  writeFileSync(lockFile, JSON.stringify({ at: Date.now(), pid: 999999 }))
+  const childLog3 = join(here, 'selftest.child3.log')
+  const child3 = spawn(process.execPath, [join(here, '..', 'server', 'main.mjs'), '--port=7997', '--silent'], {
+    cwd: FIXTURE, env: { ...process.env, DSH_LAUNCHER_ROOT: FIXTURE }, windowsHide: true,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+  let child3Buf = ''
+  child3.stdout.on('data', d => { child3Buf += d.toString() })
+  child3.stderr.on('data', d => { child3Buf += d.toString() })
+  const up3 = await waitFor(async () => {
+    return (await fetch('http://127.0.0.1:7997/api/ping').then(() => true).catch(() => false))
+  }, 15000)
+  ok(up3 === true, '第三实例已启动 :7997')
+  // 未过期的锁 → 应看到「已有实例（pid …）在处理带服务，本实例跳过」，且不启动 llm
+  const skipped = await waitFor(async () => {
+    return /已有实例（pid \d+）在处理带服务/.test(child3Buf) ? true : null
+  }, 10000)
+  ok(skipped === true, '锁被持有时：第二实例跳过带服务（不重复拉起 llm/dsh）')
+  ok(/本实例跳过/.test(child3Buf), '跳过日志含明确的「本实例跳过」提示')
+  ok(!child3Buf.includes('开机自启：启动本地大模型'), '跳过带服务 → 没有重复启动本地大模型')
+  spawnSync('taskkill', ['/PID', String(child3.pid), '/T', '/F'], { windowsHide: true })
+  await sleep(300)
+  // 过期锁 → 应被接管后正常执行
+  writeFileSync(lockFile, JSON.stringify({ at: Date.now() - 10 * 60 * 1000, pid: 999998 }))
+  const childLog4 = join(here, 'selftest.child4.log')
+  const child4 = spawn(process.execPath, [join(here, '..', 'server', 'main.mjs'), '--port=7996', '--silent'], {
+    cwd: FIXTURE, env: { ...process.env, DSH_LAUNCHER_ROOT: FIXTURE }, windowsHide: true,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+  let child4Buf = ''
+  child4.stdout.on('data', d => { child4Buf += d.toString() })
+  child4.stderr.on('data', d => { child4Buf += d.toString() })
+  const up4 = await waitFor(async () => {
+    return (await fetch('http://127.0.0.1:7996/api/ping').then(() => true).catch(() => false))
+  }, 15000)
+  ok(up4 === true, '第四实例已启动 :7996')
+  const tookOver = await waitFor(async () => {
+    return child4Buf.includes('接管过期锁') ? true : null
+  }, 10000)
+  ok(tookOver === true, '锁过期 → 新实例接管并继续（不会永久卡死）')
+  spawnSync('taskkill', ['/PID', String(child4.pid), '/T', '/F'], { windowsHide: true })
+  await sleep(300)
+  if (failed > 0) {
+    try { appendFileSync(childLog3, child3Buf); appendFileSync(childLog4, child4Buf) } catch { /* 忽略 */ }
+  }
+}
+
 console.log(`\n结果：${passed} 通过 / ${failed} 失败`)
 step(`RESULT ${passed} passed / ${failed} failed`)
 process.exit(failed === 0 ? 0 : 1)

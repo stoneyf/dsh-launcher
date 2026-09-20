@@ -8,6 +8,7 @@ import { app, BrowserWindow, shell, dialog, Tray, Menu, nativeImage } from 'elec
 import { join, dirname } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { appendFileSync, mkdirSync, readFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
 import { readConfig, ensureDirs, DIRS } from '../server/core.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -82,20 +83,66 @@ if (!gotLock) {
    * 免登录开机：探测「配置端口上是否已有一个启动器后端在运行」（开机 SYSTEM 实例先占）。
    * 命中且令牌匹配 → 返回可附着的 GUI 地址（本实例不启动自己的后端，避免端口冲突与重复拉起服务）；
    * 否则返回 null（本实例照常启动自己的后端）。
+   *
+   * 4.1.8：探测加重试。开机时 SYSTEM 实例刚起后端，令牌文件可能还没落地，
+   * 一次探测容易误判为「没有已运行后端」，进而落到 v3.3.2 的「换随机端口」老路径，
+   * 最终留下占着 7610 却不响应的僵尸实例（见 2026-09-20 事故）。
    */
-  async function probeExistingBackend(port) {
+  async function probeExistingBackend(port, attempts = 3, gapMs = 1000) {
     if (!port) return null
     const base = `http://127.0.0.1:${port}`
+    for (let i = 1; i <= attempts; i++) {
+      try {
+        const ping = await fetch(`${base}/api/ping`, { signal: AbortSignal.timeout(1500) })
+        if (ping.status !== 200) throw new Error(`ping ${ping.status}`)
+        const token = readFileSync(join(DIRS.logs, 'launcher.token'), 'ascii').trim()
+        if (!token) throw new Error('令牌文件为空')
+        const st = await fetch(`${base}/api/status?token=${token}`, { signal: AbortSignal.timeout(1500) })
+        if (st.status !== 200) throw new Error(`status ${st.status}`)
+        return `${base}/?token=${token}`
+      } catch (error) {
+        if (i < attempts) {
+          elog(`附着探测第 ${i} 次未命中（${error?.message ?? error}），${gapMs}ms 后重试`)
+          await new Promise(r => setTimeout(r, gapMs))
+        } else {
+          elog(`附着探测 ${attempts} 次均未命中，按「无已运行后端」处理`)
+        }
+      }
+    }
+    return null
+  }
+
+  /**
+   * 4.1.8：判断「配置端口上的监听者是不是自己人」。
+   * v3.3.2 的「端口被占 → 换随机端口 + 已有实例退出」是为「一台机器跑两套独立 harness」
+   * （如 D:\dsh-launcher 与 D:\deepseek-harness）设计的，必须保留；
+   * 但同目录的自家兄弟实例（SYSTEM 开机实例 vs 登录实例）撞端口时不该走这条路——
+   * 那正是僵尸实例的成因。这里用「可执行文件路径」区分自家/别家：
+   *   同一份安装（路径相同）→ 自家；不同安装（路径不同）→ 别家，仍按老逻辑换端口。
+   */
+  function isOwnInstallListener(port) {
     try {
-      const ping = await fetch(`${base}/api/ping`, { signal: AbortSignal.timeout(1500) })
-      if (ping.status !== 200) return null
-      let token = ''
-      try { token = readFileSync(join(DIRS.logs, 'launcher.token'), 'ascii').trim() } catch { return null }
-      if (!token) return null
-      const st = await fetch(`${base}/api/status?token=${token}`, { signal: AbortSignal.timeout(1500) })
-      if (st.status !== 200) return null
-      return `${base}/?token=${token}`
-    } catch { return null }
+      const out = execFileSync('netstat', ['-ano', '-p', 'TCP'], { encoding: 'utf8', windowsHide: true })
+      const pids = new Set()
+      for (const line of out.split(/\r?\n/)) {
+        const m = line.match(/^\s*TCP\s+\S+:(\d+)\s+\S+\s+LISTENING\s+(\d+)\s*$/)
+        if (m && Number(m[1]) === Number(port)) pids.add(m[2])
+      }
+      if (!pids.size) return false
+      const selfExe = process.execPath.toLowerCase()
+      const root = join(here, '..').toLowerCase()
+      for (const pid of pids) {
+        try {
+          const q = execFileSync('wmic', ['process', 'where', `ProcessId=${pid}`, 'get', 'ExecutablePath', '/value'], { encoding: 'utf8', windowsHide: true })
+          const path = (q.match(/ExecutablePath=(.+)/)?.[1] ?? '').trim().toLowerCase()
+          if (path && (path === selfExe || path.startsWith(root))) return true
+        } catch { /* 单个 pid 查不到就跳过 */ }
+      }
+      return false
+    } catch (error) {
+      elog('判断端口占用者归属失败（按别家处理）：', error?.message ?? error)
+      return false
+    }
   }
 
   async function quitAndShutdown(reason) {
@@ -148,6 +195,21 @@ if (!gotLock) {
         elog(`后端已启动: http://127.0.0.1:${actualPort}/?token=${token}`)
         guiUrl = `http://127.0.0.1:${actualPort}/?token=${token}`
         if (port && actualPort !== port) {
+          // 4.1.8：撞端口的若是自家兄弟实例（同目录安装），不能换随机端口自立门户——
+          // 那会留下「占着 7610 却不响应」的僵尸实例。此时提示并退出，让用户处理占用者。
+          if (isOwnInstallListener(port)) {
+            elog(`端口 ${port} 被同目录的自家实例占用，本实例退出（避免僵尸实例）`)
+            await dialog.showMessageBox(null, {
+              type: 'warning',
+              title: 'DSH 启动器',
+              message: `端口 ${port} 已被本机的另一个 DSH 启动器实例占用。`,
+              detail: '这通常是开机（免登录）实例与登录实例之间的冲突。\n请在托盘中退出已有实例后重试，或重启启动器。',
+            })
+            await shutdown('port-conflict-own-install')
+            app.quit()
+            return
+          }
+          // 别家安装（如另一套独立 harness）：保留 v3.3.2 的换端口行为
           await dialog.showMessageBox(null, {
             type: 'warning',
             title: 'DSH 启动器',

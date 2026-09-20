@@ -561,14 +561,50 @@ async function consumeServiceState() {
 // （AUTO_START_SERVICES，独立选项）已勾选、且没有服务状态文件（干净开机，非「重启生效」）
 // 时，自动拉起本地大模型 + dsh。有状态文件时仍按「恢复退出前运行中的」执行，
 // 用户手动停掉的服务不会被误拉起。
-async function ensureAutoStartServices() {
+//
+// 4.1.8：加跨实例文件锁。免登录开机后会有两个实例（SYSTEM 开机实例 + 登录实例），
+// 二者都会跑到这里；无锁时各拉一份 llama-server，同一模型被加载两次 → 显存/内存争抢 →
+// 「切本地模型卡住」（见 2026-09-20 事故：两个 llama-server 同时加载 27B 模型）。
+// 锁用排他创建（wx）+ 过期时间实现，进程崩溃留下的陈锁会自动被后续实例接管。
+const AUTOSTART_LOCK = join(DIRS.logs, 'autostart-services.lock')
+const AUTOSTART_LOCK_TTL = 5 * 60 * 1000
+
+function acquireAutoStartLock() {
   try {
-    if (readConfig().AUTO_START_SERVICES !== '1') return
+    mkdirSync(DIRS.logs, { recursive: true })
+    try {
+      const raw = readFileSync(AUTOSTART_LOCK, 'utf8')
+      const { at, pid } = JSON.parse(raw)
+      if (Date.now() - Number(at) < AUTOSTART_LOCK_TTL) {
+        console.log(`[launcher] 开机自启：已有实例（pid ${pid}）在处理带服务，本实例跳过`)
+        return false
+      }
+      console.log(`[launcher] 开机自启：接管过期锁（原 pid ${pid}）`)
+    } catch { /* 锁不存在或损坏 → 继续尝试创建 */ }
+    writeFileSync(AUTOSTART_LOCK, JSON.stringify({ at: Date.now(), pid: process.pid }), { flag: 'w' })
+    return true
+  } catch (error) {
+    // 锁不可写时不阻塞主流程（宁可重复一次，也不要完全不启动服务）
+    console.warn('[launcher] 开机自启：加锁失败，继续执行:', error.message)
+    return true
+  }
+}
+
+function releaseAutoStartLock() {
+  try { unlinkSync(AUTOSTART_LOCK) } catch { /* 已被清掉 */ }
+}
+
+async function ensureAutoStartServices() {
+  if (!acquireAutoStartLock()) return
+  try {
+    if (readConfig().AUTO_START_SERVICES !== '1') { releaseAutoStartLock(); return }
     const llmRunning = (await services.llmStatus()).running === true
     const dshRunning = services.dshStatus().running === true
     if (!llmRunning) {
       console.log('[launcher] 开机自启：启动本地大模型……')
       services.startLlm().catch(error => console.warn('[launcher] 开机自启 llm 失败:', error.message))
+    } else {
+      console.log('[launcher] 开机自启：本地大模型已在运行，跳过')
     }
     if (!dshRunning) {
       const cfg = readConfig()
@@ -578,8 +614,11 @@ async function ensureAutoStartServices() {
       services.startDsh({ openBrowser: false, allowPortFallback: false })
         .then(() => console.log('[launcher] 开机自启 dsh 成功'))
         .catch(error => console.warn('[launcher] 开机自启 dsh 失败:', error.message))
+    } else {
+      console.log('[launcher] 开机自启：dsh 已在运行，跳过')
     }
   } catch (error) { console.warn('[launcher] 开机自启失败:', error.message) }
+  finally { releaseAutoStartLock() }
 }
 
 // ---------- 重启续跑（4.1.5）：新实例恢复 dsh 后，自动向指定会话发「继续」 ----------
