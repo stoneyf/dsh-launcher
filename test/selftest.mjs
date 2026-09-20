@@ -421,6 +421,29 @@ step('⑩ autostart lock start')
   }
 }
 
+// ---------- 11. 退出路径静态检查（4.1.8）：托盘「退出」不得死锁 ----------
+// 历史 bug：托盘菜单先 `quitting = true` 再调 quitAndShutdown，而后者开头是
+// `if (quitting) return` → 直接返回、什么都不做，表现为「托盘点退出没反应」。
+// 这里做静态源码检查，防止该写法回归。
+console.log('⑪ 退出路径静态检查（托盘退出不死锁）')
+step('⑪ exit-path static check start')
+{
+  const mainSrc = readFileSync(join(here, '..', 'electron', 'main.mjs'), 'utf8')
+  // 1) quitting 的赋值只能出现在 quitAndShutdown 内部（函数体内），不得在调用点预先赋值
+  const trayLine = mainSrc.split('\n').find(l => l.includes("label: '退出'")) ?? ''
+  ok(trayLine.length > 0, '找到托盘「退出」菜单项')
+  ok(!/quitting\s*=\s*true/.test(trayLine), '托盘菜单项不再预先设 quitting（死锁根因已消除）')
+  // 2) quitting 赋值点应只有 1 处（声明处 let quitting = false 不计）
+  const assigns = mainSrc.split('\n').filter(l => /(^|[^=!<>])quitting\s*=\s*true/.test(l))
+  ok(assigns.length === 1, `quitting = true 只出现在 1 处（实际 ${assigns.length} 处）`)
+  // 3) 退出流程要有兜底强制退出，避免子进程卡住导致退不掉
+  ok(/app\.exit\(0\)/.test(mainSrc), '退出流程含兜底强制退出（app.exit）')
+  ok(/退出超时/.test(mainSrc), '兜底路径有明确日志（退出超时）')
+  // 4) 附着模式退出要有用户可见说明，避免「退了但服务还在」被当成没退干净
+  ok(/附着模式，仅关闭本窗口/.test(mainSrc), '附着模式退出有独立分支')
+  ok(/后台服务由开机实例托管/.test(mainSrc), '附着模式退出会告知用户服务仍在运行')
+}
+
 console.log(`\n结果：${passed} 通过 / ${failed} 失败`)
 step(`RESULT ${passed} passed / ${failed} failed`)
 process.exit(failed === 0 ? 0 : 1)

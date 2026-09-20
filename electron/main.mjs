@@ -43,7 +43,9 @@ const { startServer, shutdown } = await import(pathToFileURL(join(here, '..', 's
 
 const gotLock = app.requestSingleInstanceLock()
 if (!gotLock) {
-  elog('已有实例在运行，退出')
+  // 同用户下已有实例：把本次启动请求转交给它（会弹出已有窗口），本进程静默退出。
+  // 用户侧表现为「双击图标后窗口出现」；若已有实例在托盘里，它会 showWindow。
+  elog('已有实例在运行，退出（请求已转交给已有实例）')
   app.quit()
 } else {
   let mainWindow = null
@@ -70,7 +72,7 @@ if (!gotLock) {
       tray.setContextMenu(Menu.buildFromTemplate([
         { label: '打开启动器', click: showWindow },
         { type: 'separator' },
-        { label: '退出', click: () => { quitting = true; void quitAndShutdown('tray-quit') } },
+        { label: '退出', click: () => { void quitAndShutdown('tray-quit') } },
       ]))
       tray.on('click', showWindow)
       elog('托盘已创建')
@@ -151,15 +153,34 @@ if (!gotLock) {
     if (attached) {
       // 附着模式：后端属于开机实例，只关闭本窗口进程，不停共享服务
       elog(`退出（附着模式，仅关闭本窗口）：${reason}`)
+      // 明确告知：附着模式退出只关这一个托盘图标，开机实例的服务仍在跑。
+      // 否则用户会以为「退了但服务还在」是没退干净（2026-09-20 用户反馈托盘退出异常）。
+      try {
+        await dialog.showMessageBox({
+          type: 'info',
+          title: 'DSH 启动器',
+          message: '已退出本窗口。',
+          detail: '本实例是登录后附着的窗口，后台服务由开机实例托管，仍在运行。\n如需彻底停止服务，请在开机实例（后台静默运行的那个）里退出。',
+          buttons: ['知道了'],
+        })
+      } catch { /* 弹窗失败不阻塞退出 */ }
       app.quit()
       return
     }
     elog(`退出流程：${reason}`)
+    // 兜底：shutdown 内部若卡住（子进程不响应 taskkill、端口等待超时等），
+    // 8 秒后强制退出，避免托盘「退出」看起来没反应（2026-09-20 用户反馈）。
+    const forceTimer = setTimeout(() => {
+      elog('退出超时（8s），强制退出进程')
+      app.exit(0)
+    }, 8000)
+    forceTimer.unref?.()
     try {
       await shutdown(reason)
     } catch (error) {
       elog('shutdown 异常：', error?.stack ?? error)
     }
+    clearTimeout(forceTimer)
     app.quit()
   }
 
