@@ -505,6 +505,10 @@ let shuttingDown = false
 export async function shutdown(reason = 'shutdown') {
   if (shuttingDown) return
   shuttingDown = true
+  // 删除令牌文件：停服务需要数秒，期间本后端仍在应答；若旧令牌文件留着，
+  // 「重启生效」的新实例会误附着到这个正在退出的旧后端（旧实例一死界面即失联）。
+  // 删掉后附着探测必不命中，新实例照常起自己的后端。
+  try { unlinkSync(TOKEN_FILE) } catch { /* 忽略 */ }
   // 退出前落盘运行中的服务（任何退出原因：关窗、重启、api-quit），
   // 新实例启动时自动恢复 —— 用户退出前手动停掉的服务状态为 false，不会误拉起。
   try {

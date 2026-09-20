@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
 import net from 'node:net'
 
-export const LAUNCHER_VERSION = '4.1.6'
+export const LAUNCHER_VERSION = '4.1.7'
 
 const serverDir = dirname(fileURLToPath(import.meta.url))
 /** 根目录：默认取 server 上一级；DSH_LAUNCHER_ROOT 可覆盖（与传给 dsh 进程的同名变量一致，便于测试与外部发现）。 */
@@ -58,14 +58,28 @@ export const CONFIG_DEFAULTS = {
   DIRECT_HOSTS: '',
 }
 
-// ---------- 开机自启（Windows 启动项注册表） ----------
+// ---------- 开机自启（免登录） ----------
+// 双机制配合（同一个开关，无独立选项）：
+//  1) 计划任务 "DSH Launcher Autostart"（ONSTART + SYSTEM）：开机即运行，
+//     无需用户登录 —— 静默启动器后端 +（若勾选「开机自动启动服务」）本地模型与 Harness；
+//  2) HKCU Run（登录项）：用户登录后在用户会话里再拉起一个实例；该实例检测到
+//     开机实例已持有后端时会「附着」其界面（见 electron/main.mjs 附着模式），
+//     提供托盘图标与窗口，不占端口、不重复拉起服务。
 const RUN_KEY = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run'
 const RUN_VALUE = 'DSH Launcher'
+const TASK_NAME = 'DSH Launcher Autostart'
 
-/** 写入/删除「开机自启」注册表项。开启时以 --silent 启动（后台静默，托盘运行）。 */
+/** 写入/删除「开机自启」：计划任务（免登录，SYSTEM，开机触发）+ HKCU Run（登录后托盘）。 */
 export function setAutoStart(enabled) {
   const exe = join(ROOT, 'dsh-launcher.exe')
   const target = existsSync(exe) ? exe : join(ROOT, 'launcher.bat')
+  if (enabled) {
+    // 1) 计划任务：开机（ONSTART）即运行，不要求任何用户登录
+    spawnSync('schtasks', ['/Create', '/F', '/SC', 'ONSTART', '/TN', TASK_NAME, '/TR', `"${target}" --silent`, '/RU', 'SYSTEM'], { windowsHide: true })
+  } else {
+    spawnSync('schtasks', ['/Delete', '/F', '/TN', TASK_NAME], { windowsHide: true })
+  }
+  // 2) HKCU Run：用户登录后在用户会话里拉起（托盘/窗口）
   const data = `"${target}"${enabled ? ' --silent' : ''}`
   if (enabled) {
     spawnSync('reg', ['add', RUN_KEY, '/v', RUN_VALUE, '/t', 'REG_SZ', '/d', data, '/f'], { windowsHide: true })
@@ -75,8 +89,12 @@ export function setAutoStart(enabled) {
   return { enabled: Boolean(enabled), target }
 }
 
-/** 读取当前自启状态（注册表为准，缺失时回落配置值）。 */
+/** 读取当前自启状态（计划任务或注册表项存在即视为开启，皆无时回落配置值）。 */
 export function isAutoStart() {
+  try {
+    const r = spawnSync('schtasks', ['/Query', '/TN', TASK_NAME], { windowsHide: true, encoding: 'utf8' })
+    if (r.status === 0) return true
+  } catch { /* schtasks 不可用 */ }
   try {
     const r = spawnSync('reg', ['query', RUN_KEY, '/v', RUN_VALUE], { windowsHide: true, encoding: 'utf8' })
     if (r.status === 0 && /DSH Launcher/i.test(r.stdout ?? '')) return true
