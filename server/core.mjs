@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
 import net from 'node:net'
 
-export const LAUNCHER_VERSION = '4.1.8'
+export const LAUNCHER_VERSION = '4.1.9'
 
 const serverDir = dirname(fileURLToPath(import.meta.url))
 /** 根目录：默认取 server 上一级；DSH_LAUNCHER_ROOT 可覆盖（与传给 dsh 进程的同名变量一致，便于测试与外部发现）。 */
@@ -58,28 +58,35 @@ export const CONFIG_DEFAULTS = {
   DIRECT_HOSTS: '',
 }
 
-// ---------- 开机自启（免登录） ----------
-// 双机制配合（同一个开关，无独立选项）：
-//  1) 计划任务 "DSH Launcher Autostart"（ONSTART + SYSTEM）：开机即运行，
-//     无需用户登录 —— 静默启动器后端 +（若勾选「开机自动启动服务」）本地模型与 Harness；
-//  2) HKCU Run（登录项）：用户登录后在用户会话里再拉起一个实例；该实例检测到
-//     开机实例已持有后端时会「附着」其界面（见 electron/main.mjs 附着模式），
-//     提供托盘图标与窗口，不占端口、不重复拉起服务。
+// ---------- 开机自启（仅登录后） ----------
+// 4.1.9：**去掉免登录**。此前用「计划任务（ONSTART + SYSTEM）+ HKCU Run」双机制，
+// 让开机时无人登录也能跑服务；但它引入了两个实例（SYSTEM 会话 0 + 登录会话 1）并存的
+// 架构问题：① 开机时 SYSTEM 实例正忙于加载 15GB 本地模型，登录实例附着探测容易超时
+// → 退化成随机端口 → 出现「端口已占用」提示；② 服务归属混乱（llama 是 SYSTEM 实例的
+// 子进程，登录实例的 llm.pid 却是空的）→ 界面上点「停止全部」停不掉；③ SYSTEM 实例在
+// Session 0 无界面，用户看不见它在管什么。
+// 现在只保留 HKCU Run 登录项：用户登录后拉起启动器（托盘/窗口）+（若勾选
+// 「开机自动启动服务」）本地模型与 Harness。开机到登录之间不跑任何东西；
+// 「免登录也能用」改由用户自己的远程控制方案解决。
+// 注意：setAutoStart 仍会**主动清理**历史遗留的计划任务，避免旧版本创建的任务
+// 在升级后继续把 SYSTEM 实例拉起来。
 const RUN_KEY = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run'
 const RUN_VALUE = 'DSH Launcher'
-const TASK_NAME = 'DSH Launcher Autostart'
+const LEGACY_TASK_NAME = 'DSH Launcher Autostart'
 
-/** 写入/删除「开机自启」：计划任务（免登录，SYSTEM，开机触发）+ HKCU Run（登录后托盘）。 */
+/** 删除历史遗留的免登录计划任务（4.1.8 及更早版本创建）。 */
+function removeLegacyAutoStartTask() {
+  try {
+    spawnSync('schtasks', ['/Delete', '/F', '/TN', LEGACY_TASK_NAME], { windowsHide: true })
+  } catch { /* 任务不存在或 schtasks 不可用 */ }
+}
+
+/** 写入/删除「开机自启」：只写 HKCU Run（登录后拉起），并清理历史遗留的计划任务。 */
 export function setAutoStart(enabled) {
   const exe = join(ROOT, 'dsh-launcher.exe')
   const target = existsSync(exe) ? exe : join(ROOT, 'launcher.bat')
-  if (enabled) {
-    // 1) 计划任务：开机（ONSTART）即运行，不要求任何用户登录
-    spawnSync('schtasks', ['/Create', '/F', '/SC', 'ONSTART', '/TN', TASK_NAME, '/TR', `"${target}" --silent`, '/RU', 'SYSTEM'], { windowsHide: true })
-  } else {
-    spawnSync('schtasks', ['/Delete', '/F', '/TN', TASK_NAME], { windowsHide: true })
-  }
-  // 2) HKCU Run：用户登录后在用户会话里拉起（托盘/窗口）
+  // 无论开启还是关闭，都清掉旧版留下的免登录计划任务
+  removeLegacyAutoStartTask()
   const data = `"${target}"${enabled ? ' --silent' : ''}`
   if (enabled) {
     spawnSync('reg', ['add', RUN_KEY, '/v', RUN_VALUE, '/t', 'REG_SZ', '/d', data, '/f'], { windowsHide: true })
@@ -89,12 +96,9 @@ export function setAutoStart(enabled) {
   return { enabled: Boolean(enabled), target }
 }
 
-/** 读取当前自启状态（计划任务或注册表项存在即视为开启，皆无时回落配置值）。 */
+/** 读取当前自启状态（只看 HKCU Run；历史遗留计划任务会被顺手清理）。 */
 export function isAutoStart() {
-  try {
-    const r = spawnSync('schtasks', ['/Query', '/TN', TASK_NAME], { windowsHide: true, encoding: 'utf8' })
-    if (r.status === 0) return true
-  } catch { /* schtasks 不可用 */ }
+  removeLegacyAutoStartTask()
   try {
     const r = spawnSync('reg', ['query', RUN_KEY, '/v', RUN_VALUE], { windowsHide: true, encoding: 'utf8' })
     if (r.status === 0 && /DSH Launcher/i.test(r.stdout ?? '')) return true

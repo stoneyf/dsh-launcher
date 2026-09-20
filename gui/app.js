@@ -708,7 +708,7 @@ async function loadSettings() {
   }
 }
 
-/** 开机自启：独立控件，写计划任务（免登录）+ 注册表（不随设置表单保存）。 */
+/** 开机自启：独立控件，只写登录项 HKCU Run（登录后拉起；不随设置表单保存）。 */
 async function loadAutostart() {
   const toggle = $('#autostart-toggle')
   if (!toggle) return
@@ -724,7 +724,7 @@ function bindAutostart() {
   toggle.addEventListener('change', async () => {
     try {
       const r = await api('POST', '/api/autostart', { enabled: toggle.checked })
-      notice(r.enabled ? '开机自启已开启（开机免登录后台静默运行；登录后显示托盘）' : '开机自启已关闭')
+      notice(r.enabled ? '开机自启已开启（登录后自动后台静默启动，进托盘）' : '开机自启已关闭')
     } catch (e) {
       notice(`设置失败：${e.message}`, true)
       loadAutostart()
