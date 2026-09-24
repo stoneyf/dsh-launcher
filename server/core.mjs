@@ -373,17 +373,10 @@ export function patchProfileEntries(entries) {
     return { ok: false, reason: 'not-a-list' }
   }
   for (const entry of entries) {
-    // 同 id 可能有多条（历史遗留），Last-wins 语义：只改最后一条，其余原样保留。
-    let target = null
-    for (const row of doc) {
-      if (row && typeof row === 'object' && row.id === entry.id) target = row
-    }
-    if (target === null) {
-      doc.push({ id: entry.id, ...(entry.name ? { name: entry.name } : {}), config: entry.config })
-    } else {
-      target.config = entry.config
-      if (entry.name && target.name === undefined) target.name = entry.name
-    }
+    // Upsert by id: remove all existing rows with same id, then append.
+    // Last-wins semantics preserved; cleans historical duplicates on each sync.
+    doc = doc.filter((row) => !(row && typeof row === 'object' && row.id === entry.id))
+    doc.push({ id: entry.id, ...(entry.name ? { name: entry.name } : {}), config: entry.config })
   }
   const text = yaml.dump(doc, { lineWidth: -1, noRefs: true, quotingType: '"' })
   // 自校验：dump 出来的东西必须还能解析回等价结构，否则宁可不写。
