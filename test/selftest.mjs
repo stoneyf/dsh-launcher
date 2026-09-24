@@ -444,6 +444,51 @@ step('⑪ exit-path static check start')
   ok(/后台服务由开机实例托管/.test(mainSrc), '附着模式退出会告知用户服务仍在运行')
 }
 
+// ---------- 12. 启动前体检与失败自愈（4.2） ----------
+// 目标：dsh 因插件依赖缺失 / 配置写坏而起不来时，启动器能自己查出、修好、
+// 必要时禁用坏插件并重试，而不是让用户去手工改文件。
+console.log('⑫ 启动前体检与失败自愈（4.2）')
+step('⑫ preflight start')
+{
+  const { runChecks, findDuplicateIds, minimalYamlCheck, parseYaml, disablePlugins, enablePlugins } =
+    await import(pathToFileURL(join(here, '..', 'server', 'preflight.mjs')).href)
+  const { attributeFailure } = await import(pathToFileURL(join(here, '..', 'server', 'services.mjs')).href)
+
+  // (a) 失败归因：能精确指到插件；不该冤枉 harness 内部包或开发树
+  const a1 = attributeFailure("failed to import loader entry slot (bad-plugin): Cannot find package 'x'")
+  ok(a1?.plugins?.[0] === 'bad-plugin', '归因：loader 条目失败 → 定位到插件')
+  ok(attributeFailure("Cannot find package 'y' imported from D:\\dsh-launcher\\harness\\node_modules\\@deepseek-ai\\dsh-subagent\\lib\\index.js") === null,
+    '归因：harness 内部包缺失不算插件问题')
+  ok(attributeFailure('Error: AttachConsole failed') === null, '归因：无关报错不误判为插件问题')
+  ok(attributeFailure("Cannot find package 'react' imported from D:\\dsh-launcher\\data\\profiles\\web\\node_modules\\dsh-raw-html\\lib\\c.js")?.plugins?.[0] === 'dsh-raw-html',
+    '归因：从 profile 内插件目录反查出包名')
+
+  // (b) YAML 检查：真重复键要报，合法文件不能误报
+  ok(parseYaml('a:\n  b: 1\n  b: 2\n').ok === false, 'YAML：真实重复键被判定为非法')
+  ok(parseYaml('- id: foo\n  name: a\n- id: bar\n  name: b\n').ok === true, 'YAML：同级列表项不算重复键（曾误报）')
+  ok(minimalYamlCheck('- id: foo\n  name: a\n- id: bar\n  name: b\n').ok === true, '兜底检查：列表项首键不误报')
+  ok(minimalYamlCheck('a:\n  b: 1\n  b: 2\n').ok === false, '兜底检查：能查出重复键')
+  ok(findDuplicateIds('- id: foo\n- id: foo\n').length === 1, '重复 id 检测可用（仅提示，非致命）')
+
+  // (c) 体检在 fixture 下不得抛异常；fixture 里有 mock dsh bin，所以本体应判定为「完整」
+  const r = runChecks('web')
+  ok(Array.isArray(r.checks) && r.checks.length > 0, '体检返回结果数组')
+  ok(r.checks.every(c => c && c.id && typeof c.ok === 'boolean' && c.level), '每个检查项都有 id/ok/level')
+  ok(r.checks.some(c => c.id === 'harness' && c.ok === true), 'fixture 有 mock dsh bin → 本体判定完整')
+  ok(!r.checks.some(c => c.id === undefined), '没有未命名的检查项（曾因漏 spread 产生 undefined 项）')
+
+  // (d) 禁用/恢复插件可回滚（bundles 进出，且留备份）
+  const pdir = join(FIXTURE, 'data', 'profiles', 'web')
+  mkdirSync(pdir, { recursive: true })
+  const pkgFile = join(pdir, 'package.json')
+  writeFileSync(pkgFile, JSON.stringify({ name: 'p', dsh: { profile: { bundles: ['a', 'b'] } } }, null, 2))
+  const d = disablePlugins(['a'], 'web')
+  ok(d.ok && JSON.parse(readFileSync(pkgFile, 'utf8')).dsh.profile.bundles.join(',') === 'b', '禁用插件：从 bundles 移除')
+  ok(d.backup && existsSync(d.backup), '禁用插件：改动前留有备份（可回滚）')
+  const e = enablePlugins(['a'], 'web')
+  ok(e.ok && JSON.parse(readFileSync(pkgFile, 'utf8')).dsh.profile.bundles.includes('a'), '恢复插件：放回 bundles')
+}
+
 console.log(`\n结果：${passed} 通过 / ${failed} 失败`)
 step(`RESULT ${passed} passed / ${failed} failed`)
 process.exit(failed === 0 ? 0 : 1)

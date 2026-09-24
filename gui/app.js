@@ -855,8 +855,92 @@ function renderUpdateBanner() {
   })
 }
 
+// ---------- 启动自检（4.2） ----------
+
+/** 渲染最近一次启动前体检的结论。pf 为 /api/status 里的 preflight 摘要（可能为 null）。 */
+function renderPreflight(pf) {
+  const box = $('#preflight-box')
+  if (!box) return
+  if (!pf) {
+    box.textContent = '尚未检查。启动 Harness 时会自动检查。'
+    return
+  }
+  box.innerHTML = ''
+  const groups = [
+    ['fatal', '致命（不修就起不来）'],
+    ['repairable', '可自动修复'],
+    ['warn', '提醒'],
+    ['advisory', '仅供参考'],
+  ]
+  const head = document.createElement('div')
+  head.className = 'preflight-head'
+  const verdict = pf.ok ? '<span class="verdict ok">✓ 一切正常</span>' : '<span class="verdict bad">✗ 发现问题</span>'
+  const when = pf.at ? new Date(pf.at).toLocaleString('zh-CN') : ''
+  head.innerHTML = `${verdict}<span class="muted">检查时间 ${esc(when)}</span>`
+  box.appendChild(head)
+
+  let shown = 0
+  for (const [key, label] of groups) {
+    const items = pf[key] ?? []
+    if (items.length === 0) continue
+    for (const c of items) {
+      shown++
+      const row = document.createElement('div')
+      row.className = `preflight-item ${key}`
+      const applies = [...(c.plugins ?? []), ...(c.packages ?? [])]
+      row.innerHTML = `<span class="t">${esc(c.title)}</span>` +
+        (c.detail ? `<span class="d">${esc(c.detail)}</span>` : '') +
+        (c.fix ? `<span class="f">建议：${esc(c.fix)}</span>` : '') +
+        (applies.length ? `<span class="d">涉及插件：${esc(applies.join('、'))}</span>` : '')
+      box.appendChild(row)
+    }
+  }
+  if (shown === 0) {
+    const row = document.createElement('div')
+    row.className = 'preflight-item ok'
+    row.innerHTML = '<span class="t">✓ 本体与插件依赖都正常</span>'
+    box.appendChild(row)
+  }
+  // 本次启动做过的自动修复动作
+  const acts = pf.actions ?? []
+  if (acts.length > 0) {
+    const wrap = document.createElement('div')
+    wrap.className = 'preflight-actions'
+    wrap.innerHTML = '<b>本次启动的自动处理：</b>' + acts.map(a =>
+      `<span class="act">${esc(a.action)}：${esc(a.detail || (a.ok ? '完成' : '未生效'))}${a.plugins?.length ? `（${esc(a.plugins.join('、'))}）` : ''}</span>`,
+    ).join('')
+    box.appendChild(wrap)
+  }
+}
+
+/** 手动跑一次体检（只读），用于「重新检查」按钮。 */
+async function preflightCheck() {
+  const box = $('#preflight-box')
+  if (box) box.textContent = '检查中……'
+  try {
+    const r = await api('GET', '/api/preflight')
+    renderPreflight({ ...r, actions: [] })
+  } catch (error) {
+    if (box) box.textContent = `检查失败：${error.message}`
+  }
+}
+
+/** 体检并自动修复，用于「一键修复」按钮。 */
+async function preflightRepair() {
+  const box = $('#preflight-box')
+  if (box) box.textContent = '正在修复（可能需要几分钟安装依赖）……'
+  try {
+    const r = await api('POST', '/api/preflight/repair')
+    renderPreflight(r)
+    await refresh()
+  } catch (error) {
+    if (box) box.textContent = `修复失败：${error.message}`
+  }
+}
+
 function renderMaintain() {
   if (!status) return
+  renderPreflight(status.preflight)
   const diag = []
   const add = (name, state, hint) => diag.push({ name, state, hint })
   const v = status.versions
@@ -1034,6 +1118,9 @@ function bindLauncherUpdate() {
     $('#update-log').classList.remove('hidden')
     try { await api('POST', '/api/update/launcher/update') } catch (e) { setMsg(e.message, 'err') }
   })
+  // 启动自检（4.2）
+  $('#btn-preflight-run')?.addEventListener('click', preflightCheck)
+  $('#btn-preflight-repair')?.addEventListener('click', preflightRepair)
   $('#btn-launcher-rollback').addEventListener('click', async () => {
     try {
       const r = await api('POST', '/api/update/launcher/rollback')

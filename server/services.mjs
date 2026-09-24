@@ -16,6 +16,7 @@ import {
   nodeExe, llmBaseUrl, modelPath, modelId, mmprojPath, syncSettings, killProcessTree,
   tcpPortBusy, freePortAfter, sleep, portHolderPids, waitPortFree, resolveCtx,
 } from './core.mjs'
+import { runChecks, preflight, disablePlugins, quarantineBrokenSessions } from './preflight.mjs'
 
 const state = { llm: null, dsh: null }
 
@@ -81,10 +82,17 @@ async function waitLlmReady(timeoutSec = 900) {
   throw new Error(`等待本地大模型就绪超时（${timeoutSec}s）：` + logTail('llm.err.log', 10))
 }
 
-/** 等待 dsh 就绪：任意 HTTP 响应（含 401）即视为服务已监听。 */
-async function waitDshReady(host, port, timeoutSec = 90) {
+/** 等待 dsh 就绪：任意 HTTP 响应（含 401）即视为服务已监听。
+ *
+ *  4.2：同时盯着子进程是否已经退出——dsh 因插件/配置问题起不来时是**秒级退出**，
+ *  旧实现会傻等到 90s 超时才报错（用户感觉「卡住不动」）。现在一旦发现进程已死就
+ *  立刻返回，把「立即退出」和「超时」区分开，便于上层快速归因与重试。 */
+async function waitDshReady(host, port, timeoutSec = 90, proc = null) {
   const deadline = Date.now() + timeoutSec * 1000
   while (Date.now() < deadline) {
+    if (proc && proc.exitCode !== null) {
+      throw new Error(`Harness 进程已退出（exitCode=${proc.exitCode}）。日志尾部：` + logTail('dsh.err.log', 15))
+    }
     const code = await httpStatus(`http://${host}:${port}/`)
     if (code !== null) return
     await new Promise(resolve => setTimeout(resolve, 2000))
@@ -259,6 +267,175 @@ export function syncWebserverPort(port) {
   }
 }
 
+/**
+ * 从 dsh 的启动日志里定位「哪个插件该为这次启动失败负责」。
+ *
+ * 依据（2026-09-24 对历史 dsh.err.log 取证）的真实报错形态：
+ *   · failed to import loader entry <slot> (<包名>): Cannot find package ...   ← 可以精确定位到包
+ *   · failed to apply loader entry <slot> (<包名>): ...
+ *   · Cannot find package '@deepseek-ai/cordis' imported from <插件目录>        ← 反查插件目录
+ * 只认能明确指到一个插件包的情况；定位不到就返回 null，交给调用方决定（不瞎禁用）。
+ *
+ * @param logText 本次启动新增的日志文本
+ * @param name profile 名
+ * @returns { plugins: string[], reason: string } 或 null
+ */
+export function attributeFailure(logText, name = 'web') {
+  if (!logText) return null
+  const dir = join(DIRS.data, 'profiles', name)
+  const found = new Map() // 包名 -> 原因
+
+  // 形态一：loader 条目导入/应用失败，括号里直接带包名
+  const entryRe = /failed to (?:import|apply) loader entry\s+(\S+)\s+\(([^)]+)\)/g
+  for (const m of logText.matchAll(entryRe)) {
+    const pkg = m[2].trim().replace(/^['"]|['"]$/g, '')
+    if (pkg && !found.has(pkg)) found.set(pkg, `loader 条目 ${m[1]} 加载失败`)
+  }
+
+  // 形态二：从某个插件目录里 import 失败 → 把该目录反查回包名
+  const importRe = /Cannot find (?:package|module) '[^']*' imported from ([^\s]+)/g
+  for (const m of logText.matchAll(importRe)) {
+    const from = m[1].replace(/\\/g, '/')
+    const marker = '/node_modules/'
+    const idx = from.lastIndexOf(marker)
+    if (idx < 0) continue
+    const rest = from.slice(idx + marker.length).split('/')
+    const pkg = rest[0].startsWith('@') ? `${rest[0]}/${rest[1]}` : rest[0]
+    // 只关心 profile 里的插件；harness 内部包的缺失属于「本体坏了」，不是插件问题
+    if (from.includes('/profiles/') && !pkg.startsWith('@deepseek-ai/') && !found.has(pkg)) {
+      found.set(pkg, '自身依赖解析失败')
+    }
+  }
+
+  // 形态三：profile patch 的 YAML 错误（不是插件的锅，单独报）
+  if (/failed to parse overlay .*cordis\.patch\.yml/.test(logText)) {
+    return { plugins: [], reason: 'profile 的 cordis.patch.yml 解析失败', patchBroken: true }
+  }
+
+  if (found.size === 0) return null
+  return {
+    plugins: [...found.keys()],
+    reason: [...found].map(([p, r]) => `${p}（${r}）`).join('；'),
+  }
+}
+
+/** 动态取 node:fs（避免与顶部静态 import 重名，也便于测试打桩）。 */
+let fsBuiltin = null
+async function loadFs() {
+  if (!fsBuiltin) fsBuiltin = await import('node:fs')
+  return fsBuiltin
+}
+
+/**
+ * 启动前体检 + 自动修复（4.2）。返回体检结论，供 GUI 与日志使用。
+ * 体检本身绝不应该挡住启动——出任何异常都降级为「跳过体检」。
+ */
+export function runPreflight(name = 'web', { auto = true } = {}) {
+  try {
+    const result = preflight(name, { auto })
+    lastPreflight = result
+    const fixed = result.actions.filter(a => a.ok && a.detail)
+    if (fixed.length > 0) {
+      for (const a of fixed) console.log(`[launcher] 体检修复 ${a.action}: ${a.detail}`)
+      emitService({ service: 'dsh', type: 'state', detail: `preflight-repaired:${fixed.map(a => a.action).join(',')}` })
+    }
+    if (!result.ok) {
+      const fatal = result.after.fatal.map(c => c.title).join('；')
+      console.warn(`[launcher] 体检仍有致命项：${fatal}`)
+    }
+    return result
+  } catch (error) {
+    console.warn('[launcher] 体检异常，跳过:', error.message)
+    return null
+  }
+}
+
+// ---------- 4.2：启动失败自愈 ----------
+
+/** 记录本次体检结论（供 GUI 读取；不落盘，重启后重查）。 */
+let lastPreflight = null
+export function lastPreflightResult() { return lastPreflight }
+
+/** 自愈尝试的上限：一次启动最多禁用 N 轮插件，避免把插件全禁用掉。 */
+const MAX_HEAL_ROUNDS = 3
+
+/**
+ * 从日志文本里读出「本次启动」新写入的部分（用于归因）。
+ * @param fromOffset 启动前的文件偏移
+ */
+async function readNewLog(fromOffset) {
+  const fs = await loadFs()
+  try {
+    const file = logPath('dsh.err.log')
+    const size = fs.statSync(file).size
+    if (size <= fromOffset) return ''
+    const fd = fs.openSync(file, 'r')
+    const len = Math.min(size - fromOffset, 512 * 1024)
+    const buf = Buffer.alloc(len)
+    fs.readSync(fd, buf, 0, len, fromOffset)
+    fs.closeSync(fd)
+    return buf.toString('utf8')
+  } catch { return '' }
+}
+/**
+ * 带自愈的 dsh 启动（4.2）。
+ *
+ * 流程：体检（自动装依赖/修配置/禁用已知坏插件）→ 启动 →
+ *      若「启动后立即退出」或「等待就绪超时」→ 从本次日志归因到具体插件 →
+ *      禁用该插件 → 重试（最多 MAX_HEAL_ROUNDS 轮）。
+ *
+ * 关键点：只有能明确归因到某个插件时才禁用；归因不到就如实抛错，
+ * 不做「猜一个删掉」的破坏性动作。
+ */
+export async function startDshResilient(options = {}) {
+  const attempts = []
+  const pre = runPreflight('web', { auto: true })
+  lastPreflight = pre
+  if (pre) attempts.push({ step: 'preflight', ok: pre.ok, actions: pre.actions.map(a => a.action) })
+
+  let lastError = null
+  for (let round = 0; round <= MAX_HEAL_ROUNDS; round++) {
+    try {
+      const result = await startDsh(options)
+      attempts.push({ step: `start#${round + 1}`, ok: true })
+      return { ...result, healed: round > 0, attempts }
+    } catch (error) {
+      lastError = error
+      attempts.push({ step: `start#${round + 1}`, ok: false, error: error.message })
+      // 归因：只看本次启动新增的日志
+      const text = await readNewLog(error.logStartOffset ?? 0)
+      const attributed = attributeFailure(text) ?? attributeFailure(logTail('dsh.err.log', 200))
+
+      if (attributed?.patchBroken) {
+        // profile patch 坏了：交给体检修，再重试一次
+        console.warn('[launcher] 启动失败归因：profile 补丁解析失败，尝试修复后重试')
+        const fixed = preflight('web', { auto: true })
+        attempts.push({ step: `repair-patch#${round + 1}`, ok: fixed.ok })
+        if (round === MAX_HEAL_ROUNDS) break
+        continue
+      }
+      if (!attributed || attributed.plugins.length === 0) {
+        console.warn('[launcher] 启动失败但无法归因到具体插件，不再盲目重试')
+        break
+      }
+      if (round === MAX_HEAL_ROUNDS) {
+        console.warn(`[launcher] 已达自愈上限（${MAX_HEAL_ROUNDS} 轮），停止`)
+        break
+      }
+      console.warn(`[launcher] 启动失败归因：${attributed.reason} → 禁用后重试`)
+      const disabled = disablePlugins(attributed.plugins, 'web')
+      attempts.push({ step: `disable#${round + 1}`, plugins: attributed.plugins, ok: disabled.ok, detail: disabled.detail })
+      if (!disabled.ok) break
+      emitService({ service: 'dsh', type: 'state', detail: `auto-disabled:${attributed.plugins.join(',')}` })
+    }
+  }
+  const err = new Error(
+    `Harness 启动失败（已自愈 ${MAX_HEAL_ROUNDS} 轮仍未成功）：${lastError?.message ?? '未知原因'}`,
+  )
+  err.attempts = attempts
+  throw err
+}
+
 export async function startDsh({ openBrowser = true, allowPortFallback = true } = {}) {
   selfHeal('dsh')
   if (state.dsh?.running) throw new Error('Harness 已在运行。')
@@ -291,11 +468,16 @@ export async function startDsh({ openBrowser = true, allowPortFallback = true } 
     COREPACK_HOME: join(ROOT, 'vendor', 'corepack-home'),
     PATH: `${DIRS.runtimeNode};${process.env.PATH ?? ''}`,
   }
-  // 记录启动前的日志偏移：token 只从本次启动写入的日志中解析
+  // 记录启动前的日志偏移：token 只从本次启动写入的日志中解析；失败归因也只看这一段
   let logStartOffset = 0
+  let errLogOffset = 0
   try {
     const { statSync } = await import('node:fs')
     logStartOffset = statSync(logPath('dsh.out.log')).size
+  } catch { /* 日志尚不存在 */ }
+  try {
+    const { statSync } = await import('node:fs')
+    errLogOffset = statSync(logPath('dsh.err.log')).size
   } catch { /* 日志尚不存在 */ }
   const proc = spawn(nodeExe(), args, {
     cwd: ROOT,
@@ -311,17 +493,23 @@ export async function startDsh({ openBrowser = true, allowPortFallback = true } 
   })
   state.dsh = { running: true, proc, port }
   writePid('dsh', proc.pid)
+  // 把偏移挂到抛出的错误上，供 startDshResilient 做「只看本次日志」的失败归因
+  const fail = message => {
+    const e = new Error(message)
+    e.logStartOffset = errLogOffset
+    return e
+  }
   try {
-    await waitDshReady(host, port, 90)
+    await waitDshReady(host, port, 90, proc)
   } catch (error) {
     await stopDsh()
-    throw error
+    throw fail(error.message)
   }
   const url = await resolveTokenUrl(`http://${host}:${port}/`, logStartOffset)
   // dsh 可能「先监听、随后崩溃退出」（exit 事件已把 state.dsh 置空）：
   // 此时要报出真实原因，而不是让 state.dsh.url 赋值抛出 TypeError。
   if (!state.dsh) {
-    throw new Error(`Harness 启动后立即退出（端口 ${port} 已释放）。日志尾部：` + logTail('dsh.err.log', 15))
+    throw fail(`Harness 启动后立即退出（端口 ${port} 已释放）。日志尾部：` + logTail('dsh.err.log', 15))
   }
   state.dsh.url = url
   const { writeFileSync } = await import('node:fs')
@@ -426,7 +614,8 @@ export async function restartLlm() {
 export async function startAll() {
   const results = {}
   results.llm = await startLlm().catch(error => ({ error: error.message }))
-  results.dsh = await startDsh().catch(error => ({ error: error.message }))
+  // 4.2：dsh 走体检 + 自愈路径
+  results.dsh = await startDshResilient().catch(error => ({ error: error.message }))
   return results
 }
 

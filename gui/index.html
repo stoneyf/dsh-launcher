@@ -247,6 +247,8 @@
     <!-- ============ 维护 ============ -->
     <section id="page-maintain" class="page">
       <div class="page-head"><h1>维护</h1></div>
+      <div class="section-title">启动自检（4.2）<button class="btn btn-ghost btn-xs" id="btn-preflight-run">重新检查</button><button class="btn btn-ghost btn-xs" id="btn-preflight-repair">一键修复</button></div>
+      <div id="preflight-box" class="preflight-box">尚未检查。启动 Harness 时会自动检查。</div>
       <div class="section-title">环境诊断</div>
       <div id="diag-list" class="diag-list">加载中……</div>
       <div class="section-title">版本管理</div>
@@ -282,6 +284,7 @@
           <li>版本管理：harness / llama / node / 启动器 的更新、回滚、在已装版本与 GitHub 历史版本间切换</li>
           <li>开机自启（后台静默 + 托盘；可单独勾选「开机自动启动服务」自动拉起本地大模型和 Harness）、更新提示；对话删除已移到 Harness 网页端（右侧边栏「对话」标签）</li>
           <li>环境诊断、GPU 显存监控、控制台实时日志、深浅色主题</li>
+          <li><b>启动自检（4.2）</b>：启动 Harness 前自动检查本体与插件依赖，自动补装缺失依赖、修掉配置错误、禁用起不来的插件并自动重试，尽量保证一次启动成功</li>
         </ul>
       </div>
       <div class="about-row">

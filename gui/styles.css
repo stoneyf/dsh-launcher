@@ -237,6 +237,30 @@ input[type=checkbox] { accent-color: var(--accent); width: 15px; height: 15px; }
 }
 .about-row { display: flex; gap: 10px; margin: 8px 0; flex-wrap: wrap; color: var(--text-dim); font-size: 13px; }
 
+/* ---------- 启动自检（4.2） ---------- */
+.preflight-box {
+  background: var(--bg2); border: 1px solid var(--border); border-radius: 8px;
+  padding: 10px 14px; font-size: 13px; display: flex; flex-direction: column; gap: 8px;
+}
+.preflight-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.preflight-head .verdict { font-weight: 600; }
+.preflight-head .verdict.ok { color: var(--green); }
+.preflight-head .verdict.bad { color: var(--red); }
+.preflight-head .muted { color: var(--text-dim); font-size: 12px; }
+.preflight-item {
+  border-left: 3px solid var(--border); padding: 6px 10px; border-radius: 4px;
+  background: var(--bg3); display: flex; flex-direction: column; gap: 3px;
+}
+.preflight-item.fatal { border-left-color: var(--red); }
+.preflight-item.repairable { border-left-color: var(--yellow); }
+.preflight-item.warn, .preflight-item.advisory { border-left-color: var(--text-dim); }
+.preflight-item.ok { border-left-color: var(--green); }
+.preflight-item .t { font-weight: 600; }
+.preflight-item .d { color: var(--text-dim); font-size: 12px; word-break: break-all; }
+.preflight-item .f { color: var(--text-dim); font-size: 12px; font-style: italic; }
+.preflight-actions { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--text-dim); }
+.preflight-actions .act::before { content: '· '; }
+
 /* ---------- 控制台 ---------- */
 #console { border-top: 1px solid var(--border); background: var(--console-bg); display: flex; flex-direction: column; height: 200px; }
 #console.collapsed { height: 34px; }

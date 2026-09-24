@@ -31,6 +31,7 @@ import * as downloads from './downloads.mjs'
 import * as versions from './versions.mjs'
 import * as launcherUpdate from './launcher-update.mjs'
 import * as sessions from './sessions.mjs'
+import { enablePlugins, runChecks } from './preflight.mjs'
 
 const TOKEN_FILE = join(DIRS.logs, 'launcher.token')
 const token = crypto.randomBytes(24).toString('hex')
@@ -202,8 +203,41 @@ route('GET', /^\/api\/status$/, async (req, res) => {
       dsh: await tcpPortBusy(cfg.DSH_HOST, Number(cfg.DSH_PORT)),
     },
     disk,
+    // 4.2：最近一次启动前体检的结论（未体检过为 null）
+    preflight: preflightSummary(),
   })
 })
+
+/** 4.2：把体检结论压成 GUI 好用的摘要（不返回全部细节，避免 /api/status 过大）。 */
+function preflightSummary() {
+  const r = services.lastPreflightResult()
+  if (!r) return null
+  const brief = c => ({
+    id: c.id, level: c.level, title: c.title, detail: c.detail, fix: c.fix ?? null,
+    // 带上受影响的插件名，GUI 才能做「恢复这个插件」这类操作
+    packages: c.packages ?? null, plugins: c.plugins ?? null,
+  })
+  // 兼容两种形状：preflight() 的结论（含 before/after/actions）与 runChecks() 的裸结论。
+  // 前者看 after（修复后的终态），后者本身就是终态。
+  const view = r.after ?? r
+  return {
+    ok: r.ok,
+    at: r.at ?? view.at,
+    fatal: (view.fatal ?? []).map(brief),
+    repairable: (view.repairable ?? []).map(brief),
+    warn: (view.warn ?? []).map(brief),
+    advisory: (view.advisory ?? []).map(brief),
+    actions: (r.actions ?? []).map(a => ({ action: a.action, ok: a.ok, detail: a.detail ?? '', plugins: a.plugins ?? null })),
+  }
+}
+
+/** 只读体检的返回：统一成上面的摘要形状（GUI 只认一种格式）。 */
+function preflightReport(auto) {
+  const r = services.runPreflight('web', { auto })
+  if (!r) return { ok: false, fatal: [], repairable: [], warn: [], advisory: [], actions: [], error: '体检不可用' }
+  const s = preflightSummary()
+  return s ?? { ok: false, fatal: [], repairable: [], warn: [], advisory: [], actions: [], error: '体检结果为空' }
+}
 
 route('GET', /^\/api\/gpu$/, async (req, res) => sendJson(res, 200, await gpu.gpuInfo(true)))
 
@@ -212,8 +246,29 @@ route('POST', /^\/api\/stop-all$/, async (req, res) => { await services.stopAll(
 
 route('POST', /^\/api\/services\/(llm|dsh)\/start$/, async (req, res, m) => {
   try {
-    const result = m[1] === 'llm' ? await services.startLlm() : await services.startDsh()
+    // 4.2：dsh 走「体检 + 失败自愈」路径，尽量保证起得来
+    const result = m[1] === 'llm'
+      ? await services.startLlm()
+      : await services.startDshResilient()
     sendJson(res, 200, result)
+  } catch (error) { sendError(res, 500, error.message) }
+})
+
+// ---------- 4.2：启动前体检 ----------
+
+/** 只读体检（不修）：给 GUI 展示，可先看问题再决定修不修。 */
+route('GET', /^\/api\/preflight$/, (req, res) => sendJson(res, 200, preflightReport(false)))
+
+/** 体检并自动修复（装依赖 / 修 patch / 禁用坏插件）。 */
+route('POST', /^\/api\/preflight\/repair$/, (req, res) => sendJson(res, 200, preflightReport(true)))
+
+/** 恢复被体检禁用的插件。 */
+route('POST', /^\/api\/preflight\/enable$/, async (req, res) => {
+  try {
+    const body = await readBody(req)
+    const names = Array.isArray(body?.plugins) ? body.plugins : []
+    if (names.length === 0) return sendError(res, 400, '未指定要恢复的插件')
+    sendJson(res, 200, enablePlugins(names, 'web'))
   } catch (error) { sendError(res, 500, error.message) }
 })
 
@@ -550,7 +605,7 @@ async function consumeServiceState() {
     const dshPort = Number(cfg.DSH_PORT) || 3080
     const free = await waitPortFree(dshPort, 15000)
     console.log(`[launcher] dsh 端口 ${dshPort} ${free ? '已空闲' : '仍被占用'}`)
-    services.startDsh({ openBrowser: false, allowPortFallback: false })
+    services.startDshResilient({ openBrowser: false, allowPortFallback: false })
       .then(() => console.log('[launcher] 自动恢复 dsh 成功'))
       .catch(error => console.warn('[launcher] 自动恢复 dsh 失败:', error.message))
   }
@@ -611,7 +666,7 @@ async function ensureAutoStartServices() {
       const dshPort = Number(cfg.DSH_PORT) || 3080
       const free = await waitPortFree(dshPort, 15000)
       console.log(`[launcher] 开机自启：启动 dsh（端口 ${dshPort} ${free ? '已空闲' : '仍被占用'}）……`)
-      services.startDsh({ openBrowser: false, allowPortFallback: false })
+      services.startDshResilient({ openBrowser: false, allowPortFallback: false })
         .then(() => console.log('[launcher] 开机自启 dsh 成功'))
         .catch(error => console.warn('[launcher] 开机自启 dsh 失败:', error.message))
     } else {
