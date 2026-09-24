@@ -1,4 +1,4 @@
-﻿# ============================================================
+# ============================================================
 #  DSH 启动器 GitHub 一键发版
 #  用法:  pwsh scripts\publish.ps1 -Notes "本版本说明"
 #  可选:  -Repo stoneyf/dsh-launcher  -Token <PAT>  -Force（同名 release 已存在时覆盖）
@@ -74,17 +74,27 @@ $manifestPath = Join-Path $root 'launcher-manifest.json'
 Write-Host "[publish] manifest -> $zipUrl"
 
 # ---------- 5) git 提交 + tag ----------
+# 顺序很重要（2026-09-24 踩坑）：必须**先提交 manifest、再打 tag**。
+# 之前 tag 打在 manifest 提交之前，导致 tag/Release 指向的提交里 manifest 还是上一个版本，
+# 而「检查更新」读的是 main 分支上的 launcher-manifest.json —— 版本对不上。
 $r = Run-Git add launcher-manifest.json
 if ($r.Code -ne 0) { throw "git add 失败`n$($r.Out)" }
 $r = Run-Git diff --cached --quiet
 if ($r.Code -ne 0) {
-  $r = Run-Git commit -m "Release $tag"
+  $r = Run-Git commit -m "Release $tag manifest"
   if ($r.Code -ne 0) { throw "git commit 失败`n$($r.Out)" }
+} else {
+  Write-Host '[publish] manifest 无变化，跳过提交'
 }
-$r = Run-Git tag -f $tag
-if ($r.Code -ne 0) { throw "git tag $tag 失败`n$($r.Out)" }
+# 先推 main（manifest 已进去），确保 release/检查更新读到的 manifest 与本次版本一致
 $r = Run-Git push origin main
 if ($r.Code -ne 0) { Write-Host "[publish] 警告: git push main 失败（可稍后手动重推）`n$($r.Out)" }
+# 再打 tag（此时指向已含新 manifest 的提交）；失败必须中断，否则会出现
+# 「远程 tag 指向旧提交」的错位（历史上发生过）
+$r = Run-Git tag -f $tag
+if ($r.Code -ne 0) { throw "git tag $tag 失败`n$($r.Out)" }
+$headAfter = (Run-Git rev-parse HEAD).Out.Trim()
+Write-Host "[publish] HEAD=$($headAfter.Substring(0,7)) tag=$tag"
 
 # ---------- 6) GitHub token ----------
 if (-not $Token) {
