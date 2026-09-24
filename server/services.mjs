@@ -193,6 +193,10 @@ export async function startLlm() {
     '--parallel', String(cfg.LLM_PARALLEL),
     '--jinja',
   ]
+  // 额外参数（config\launcher.env 的 LLM_EXTRA_ARGS，空格分隔）。
+  // 用于关掉推理模型的思考链等：见 core.mjs CONFIG_DEFAULTS 里的说明。
+  const extraArgs = String(cfg.LLM_EXTRA_ARGS ?? '').trim()
+  if (extraArgs) args.push(...extraArgs.split(/\s+/).filter(Boolean))
   // 视觉：加载 mmproj 投影器后，llama-server 支持图像/视频输入（OpenAI image_url）
   if (mmproj) args.push('--mmproj', mmproj)
   const proc = spawn(exe, args, {

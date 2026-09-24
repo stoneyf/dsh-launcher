@@ -4,6 +4,11 @@
 
 ## 更新日志
 
+### 4.2.2
+- **修好「切到本地大模型后第一轮工具调用报 `DeepSeek Messages expected a JSON object`」**：根因是本地模型（llama-server，标准 OpenAI 协议）被错挂在 `llm-deepseek` 适配器（DeepSeek 私有 Messages 协议）上——简单回复碰巧能过，但工具调用参数解析一碰就炸。现在本地模型改走 `llm-pi-ai` 路由下的 `local-llama`（`openai-completions` 协议），云端 `deepseek` 路由一字不动。
+- **启动器同步逻辑跟着改**：`syncSettings()` 不再维护 `llm-deepseek` 条目，改为在 `llm-pi-ai` 路由里维护 `local-llama`（保留云端 `deepseek` provider），并把 `agent-default-model` 指向 `local-llama`。重装/重置后不会再踩回错适配器。
+- 自测保持 **83/0** 全绿。
+
 ### 4.2.1
 - **修复「重启 Harness 后界面一直显示正在重启、像是起不来」**（2026-09-24 用户反馈）。查出两个独立原因，都已修：
   - **重启绕过了启动自检**：从对话里点「重启 Harness」走的是旧路径，**没有**走 4.2 新增的启动前体检与失败自愈——所以插件或配置有问题时，重启必然卡死到 90 秒超时。现在重启与首次启动走同一条「先体检、失败就归因重试」的路径。

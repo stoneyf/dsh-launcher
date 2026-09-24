@@ -9,9 +9,10 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, statSy
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
+import { createRequire } from 'node:module'
 import net from 'node:net'
 
-export const LAUNCHER_VERSION = '4.2.1'
+export const LAUNCHER_VERSION = '4.2.2'
 
 const serverDir = dirname(fileURLToPath(import.meta.url))
 /** 根目录：默认取 server 上一级；DSH_LAUNCHER_ROOT 可覆盖（与传给 dsh 进程的同名变量一致，便于测试与外部发现）。 */
@@ -34,6 +35,17 @@ export const DIRS = {
 export const CONFIG_FILE = join(DIRS.config, 'launcher.env')
 export const SETTINGS_FILE = join(DIRS.data, 'settings.yaml')
 
+/** js-yaml：复用 harness 自带的那份（与 dsh 解析 profile patch 用同一个库，避免行为差异）。
+ *  启动器本体保持零第三方依赖——不装包，借 harness 的 node_modules。 */
+const yaml = (() => {
+  for (const anchor of [join(DIRS.harness, 'node_modules'), join(ROOT, 'node_modules')]) {
+    try {
+      return createRequire(join(anchor, 'noop.js'))('js-yaml')
+    } catch { /* 换下一个锚点 */ }
+  }
+  return null
+})()
+
 export const CONFIG_DEFAULTS = {
   LAUNCHER_PORT: '7610',
   DSH_HOST: '127.0.0.1',
@@ -47,6 +59,11 @@ export const CONFIG_DEFAULTS = {
   LLM_MAXTOKENS: 'auto',
   LLM_NGPU: '999',
   LLM_PARALLEL: '1',
+  // 追加给 llama-server 的额外命令行参数（空格分隔）。默认关掉思考链：
+  // 本机模型是推理模型，chat template 默认保留 reasoning，每轮回复都带
+  // reasoning_content 字段；DSH 端 llm-deepseek 按 thinking: disabled 构造
+  // 请求，两边对不上会报 "Messages expected a JSON object"。
+  LLM_EXTRA_ARGS: '--reasoning off',
   LLM_API_KEY: 'local',
   HUB_ALLOWLIST_ONLY: '0',
   HUB_MIRROR: 'https://hf-mirror.com',
@@ -259,7 +276,33 @@ export function resolveMaxTokens(ctx) {
   return Math.min(cap, ctx)
 }
 
-/** 把本地大模型接入 Harness：维护 llm-deepseek 与 agent-default-model 两段。 */
+/** 把本地大模型接入 Harness：在 profile patch 的 llm-pi-ai 路由里维护 local-llama 这条 OpenAI 协议 config，
+ *  并把 agent-default-model 指向它（4.2.2 起本地模型改走 openai-completions 适配器，不再用 llm-deepseek 私有协议）。
+ *
+ *  0.1.7 起 harness 废弃了 `data\settings.yaml`：启动时 dsh-settings 会把该文件改名成
+ *  `settings.yaml.imported` 并把各段迁进 profile 的 patch（= `cordis.patch.yml`），
+ *  之后所有配置读写都走 configEditor.documentPath → patchPath。启动器若还往老路径写，
+ *  会被 dsh 下次启动再次迁走，形成「写了就没、找不到就 ENOENT」的循环，
+ *  dsh-tasks / ml-study 的模型自动切换因此失效（停不掉、也切不回）。
+ */
+/** 读取 profile patch 里指定 id 的条目（不存在返回 null）。解析失败也返回 null，不抛。 */
+export function readProfileEntry(id) {
+  const file = profilePatchFile()
+  if (yaml === null || !existsSync(file)) return null
+  let doc
+  try {
+    doc = yaml.load(readFileSync(file, 'utf8'))
+  } catch {
+    return null
+  }
+  if (!Array.isArray(doc)) return null
+  let target = null
+  for (const row of doc) {
+    if (row && typeof row === 'object' && row.id === id) target = row
+  }
+  return target
+}
+
 export function syncSettings() {
   const cfg = readConfig()
   const id = modelId()
@@ -268,31 +311,91 @@ export function syncSettings() {
   const maxTok = resolveMaxTokens(ctx)
   // 配置了视觉投影器（LLM_MMPROJ）时声明图像输入能力，DSH 才会放行图片内容。
   const vision = mmprojPath() !== null
-  const llmSection = [
-    'llm-deepseek:',
-    '  apiKeyEnv: LLM_API_KEY',
-    `  baseURL: 'http://${cfg.LLM_HOST}:${llmPort}/v1'`,
-    '  thinking: disabled',
-    `  maxTokens: ${maxTok}`,
-    `  defaultContextWindow: ${ctx}`,
-    '  models:',
-    `    - id: ${id}`,
-    `      name: ${id}`,
-    `      contextWindow: ${ctx}`,
-    `      maxTokens: ${maxTok}`,
-    ...(vision ? [`      inputModalities: [text, image]`] : []),
-  ].join('\r\n')
-  const selSection = [
-    'agent-default-model:',
-    '  provider: deepseek-official',
-    `  model: ${id}`,
-  ].join('\r\n')
-  let content = existsSync(SETTINGS_FILE) ? readFileSync(SETTINGS_FILE, 'utf8') : ''
-  content = replaceYamlSection(content, 'llm-deepseek', llmSection)
-  content = replaceYamlSection(content, 'agent-default-model', selSection)
-  mkdirSync(DIRS.data, { recursive: true })
-  writeFileSync(SETTINGS_FILE, content, 'utf8')
+  // llama-server 说的是标准 OpenAI 协议，必须挂在 openai-completions 适配器下。
+  // 4.2.2 之前本地模型误配在 llm-deepseek（DeepSeek 私有 Messages 协议）上，
+  // 简单回复碰巧能过、但工具调用参数解析一碰就报 "DeepSeek Messages expected a JSON object"。
+  // 现改走 llm-pi-ai 路由下的 local-llama（openai-completions），云端 deepseek 路由不动。
+  const localLlama = {
+    api: 'openai-completions',
+    baseURL: `http://${cfg.LLM_HOST}:${llmPort}/v1`,
+    apiKeyEnv: 'LLM_API_KEY',
+    models: [
+      {
+        id,
+        contextWindow: ctx,
+        maxTokens: maxTok,
+        ...(vision ? { inputModalities: ['text', 'image'] } : {}),
+      },
+    ],
+  }
+  // 只更新 local-llama 这一个 provider，云端 deepseek（DEEPSEEK_API_KEY）保持不动。
+  // patchProfileEntries 是整段覆盖语义，所以先把现有 providers 读出来再合回去。
+  const piConfig = { providers: { deepseek: { apiKeyEnv: 'DEEPSEEK_API_KEY' } } }
+  const existing = readProfileEntry('llm-pi-ai')
+  if (existing?.config?.providers && typeof existing.config.providers === 'object') {
+    piConfig.providers = { ...existing.config.providers, 'local-llama': localLlama }
+  }
+  const selConfig = { provider: 'local-llama', model: id }
+  patchProfileEntries([
+    { id: 'llm-pi-ai', name: '@deepseek-ai/dsh-llm-pi-ai', config: piConfig },
+    { id: 'agent-default-model', name: '@deepseek-ai/dsh-agent-default-model', config: selConfig },
+  ])
 }
+
+/** profile patch 文件（cordis.patch.yml）：0.1.7 起 Harness 配置的唯一落盘位置。 */
+export function profilePatchFile() {
+  return join(DIRS.data, 'profiles', 'web', 'cordis.patch.yml')
+}
+
+/** 合并式写入 profile patch：按 id 更新/追加条目并保留其余内容与注释。
+ *  用 js-yaml 解析（与 dsh 同款），写回前整份校验，避免写坏 dsh 起不来。
+ *  @param {Array<{id: string, name?: string, config: object}>} entries 要同步的条目 */
+export function patchProfileEntries(entries) {
+  const file = profilePatchFile()
+  if (yaml === null) {
+    console.warn('[launcher] 取不到 js-yaml（harness 未安装？），跳过配置同步')
+    return { ok: false, reason: 'no-yaml' }
+  }
+  if (!existsSync(file)) {
+    // profile 尚未生成：写成裸 settings.yaml 也没用（dsh 会迁走），直接跳过并留下线索。
+    console.warn(`[launcher] profile patch 不存在，跳过配置同步：${file}`)
+    return { ok: false, reason: 'patch-missing' }
+  }
+  let doc
+  try {
+    doc = yaml.load(readFileSync(file, 'utf8'))
+  } catch (error) {
+    console.warn(`[launcher] profile patch 解析失败，跳过配置同步：${error.message}`)
+    return { ok: false, reason: 'parse-failed' }
+  }
+  if (!Array.isArray(doc)) {
+    console.warn('[launcher] profile patch 不是顶层数组，跳过配置同步')
+    return { ok: false, reason: 'not-a-list' }
+  }
+  for (const entry of entries) {
+    // 同 id 可能有多条（历史遗留），Last-wins 语义：只改最后一条，其余原样保留。
+    let target = null
+    for (const row of doc) {
+      if (row && typeof row === 'object' && row.id === entry.id) target = row
+    }
+    if (target === null) {
+      doc.push({ id: entry.id, ...(entry.name ? { name: entry.name } : {}), config: entry.config })
+    } else {
+      target.config = entry.config
+      if (entry.name && target.name === undefined) target.name = entry.name
+    }
+  }
+  const text = yaml.dump(doc, { lineWidth: -1, noRefs: true, quotingType: '"' })
+  // 自校验：dump 出来的东西必须还能解析回等价结构，否则宁可不写。
+  const round = yaml.load(text)
+  if (!Array.isArray(round) || round.length !== doc.length) {
+    console.warn('[launcher] profile patch 自校验失败，未写入')
+    return { ok: false, reason: 'verify-failed' }
+  }
+  writeFileSync(file, text, 'utf8')
+  return { ok: true, count: entries.length }
+}
+
 
 /** 运行外部命令（同步），返回 {ok, stdout, stderr, code}。 */
 export function run(cmd, args, options = {}) {

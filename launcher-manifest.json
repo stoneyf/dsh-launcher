@@ -1,5 +1,5 @@
 {
-    "version":  "4.2.1",
-    "notes":  "4.2.0 + 4.2.1\n\n【本版主题】让 dsh「一定能启动」：启动前自动体检、自动补依赖、自动禁用坏插件、启动失败自动回滚重试。\n\n■ 4.2.0 启动自检\n· 启动 Harness 前先体检六项：本体是否完整、profile 配置能否解析、插件是否装齐、\n  插件运行时依赖是否缺、配置补丁 cordis.patch.yml 语法、会话日志是否损坏\n· 自动修复：缺依赖自动补装；配置写坏自动备份后修好；实在装不上的插件自动禁用\n  （所有改动先备份到 data\\_preflight-backup\\，可回滚）\n· 启动失败自动自愈：从日志定位是哪个插件害的 → 禁用 → 重试（最多 3 轮）；\n  定位不到就不瞎猜、不乱删，如实报错\n· 报错更快更准：进程秒退时立刻报真实原因，不再傻等 90 秒超时（实测 90s → 约 7s）\n· 维护页新增「启动自检」区块：可看结论、重新检查（只读）、一键修复\n\n■ 4.2.1 修复「重启 Harness 后界面一直显示正在重启」\n· 重启原来走的是一条旧路，绕过了 4.2 的体检与自愈，插件/配置有问题时必然卡到 90s 超时\n  —— 现在重启与首次启动走同一条自愈路径\n· 「正在重启 Harness……」这条提示弹出后没有任何代码把它收掉，于是一直挂在界面上，\n  看起来就像起不来 —— 现在等服务确实回来（或明确失败）再换掉\n· 令牌文件自愈：logs\\launcher.token 被删后，活着的实例会自动补写回来\n\n■ 自测\n· 58 项 → 83 项，全部通过",
-    "url":  "https://github.com/stoneyf/dsh-launcher/releases/download/v4.2.1/launcher-v4.2.1.zip"
+    "version":  "4.2.2",
+    "notes":  "修好本地模型切过去后第一轮工具调用报 DeepSeek Messages expected a JSON object：本地模型改走 openai-completions 适配器（llm-pi-ai 路由下 local-llama），云端 deepseek 路由不动。syncSettings 跟着改，重装不再踩回错适配器。",
+    "url":  "https://github.com/stoneyf/dsh-launcher/releases/download/v4.2.2/launcher-v4.2.2.zip"
 }
