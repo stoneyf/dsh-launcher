@@ -303,12 +303,35 @@ export function readProfileEntry(id) {
   return target
 }
 
+/** 移除 profile patch 中已废弃的条目（4.2.2 前本地模型误配在 llm-deepseek）。 */
+export function removeProfileEntry(id) {
+  const file = profilePatchFile()
+  if (yaml === null || !existsSync(file)) return { ok: false, reason: 'skipped' }
+  let doc
+  try {
+    doc = yaml.load(readFileSync(file, 'utf8'))
+  } catch {
+    return { ok: false, reason: 'parse-failed' }
+  }
+  if (!Array.isArray(doc)) return { ok: false, reason: 'not-a-list' }
+  const before = doc.length
+  doc = doc.filter((row) => !(row && typeof row === 'object' && row.id === id))
+  if (doc.length === before) return { ok: true, removed: 0 }
+  const text = yaml.dump(doc, { lineWidth: -1, noRefs: true, quotingType: '"' })
+  const round = yaml.load(text)
+  if (!Array.isArray(round) || round.length !== doc.length) return { ok: false, reason: 'verify-failed' }
+  writeFileSync(file, text, 'utf8')
+  return { ok: true, removed: before - doc.length }
+}
+
 export function syncSettings() {
   const cfg = readConfig()
   const id = modelId()
   const llmPort = Number(cfg.LLM_PORT)
   const ctx = resolveCtx()
   const maxTok = resolveMaxTokens(ctx)
+  // 4.2.2: remove legacy llm-deepseek provider (local model now uses openai-completions under llm-pi-ai).
+  removeProfileEntry('llm-deepseek')
   // 配置了视觉投影器（LLM_MMPROJ）时声明图像输入能力，DSH 才会放行图片内容。
   const vision = mmprojPath() !== null
   // llama-server 说的是标准 OpenAI 协议，必须挂在 openai-completions 适配器下。
