@@ -80,6 +80,19 @@ function notice(text, isError = false) {
   if (text) box.classList.remove('hidden')
 }
 
+/** 收起顶部提示横幅（4.2：重启等长流程结束后必须能收掉，否则像卡住）。 */
+function hideNotice() {
+  const box = $('#home-notice')
+  if (!box) return
+  box.textContent = ''
+  box.classList.add('hidden')
+  box.classList.remove('error')
+}
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms))
+}
+
 function setBadge(el, on, text) {
   el.textContent = text
   el.classList.toggle('on', Boolean(on))
@@ -242,6 +255,11 @@ async function stopAll() {
 }
 
 // V3：重启 —— API 立即 202 返回，进度由 SSE 即时推送 + 状态轮询兜底
+//
+// 4.2 修：此前这里 notice('正在重启…') 之后**从来没有人清掉它**，
+// 于是横幅会一直挂在页面上，看起来像「卡在正在重启、起不来」——
+// 尤其重启 dsh 时浏览器会话断开重连，重连后横幅还在，用户会以为没起来。
+// 现在改为「等到服务确实回来（或明确失败）再把横幅收掉」。
 async function restartService(svc) {
   const label = svc === 'dsh' ? 'Harness' : '本地大模型'
   notice(`正在重启${label}……浏览器会话会短暂断开后自动重连`)
@@ -249,8 +267,34 @@ async function restartService(svc) {
     await api('POST', `/api/services/${svc}/restart`)
   } catch (error) {
     notice(`重启失败：${error.message}`, true)
+    await refreshStatus()
+    return
+  }
+  // 轮询等结果：上游用 202 立即返回，真正完成与否要看服务状态与重启阶段。
+  const deadline = Date.now() + 180000
+  let ok = false
+  let lastErr = ''
+  while (Date.now() < deadline) {
+    await sleep(2000)
+    let st = null
+    try {
+      st = await api('GET', '/api/status')
+      status = st
+    } catch {
+      // 重启 dsh 时本页连的就是 dsh，断开属正常，继续等
+      continue
+    }
+    const phase = st?.restarting?.[svc]
+    const running = st?.services?.[svc]?.running === true
+    if (phase?.phase === 'error') { lastErr = phase.detail ?? ''; break }
+    if (running && phase?.phase !== 'error') { ok = true; break }
   }
   await refreshStatus()
+  if (ok) notice(`${label}已重启完成`)
+  else if (lastErr) notice(`重启失败：${lastErr}`, true)
+  else notice(`${label}重启超时，请查看日志`, true)
+  // 成功提示 6 秒后自动收起，避免长期占位
+  if (ok) setTimeout(() => { if ($('#home-notice')?.textContent === `${label}已重启完成`) hideNotice() }, 6000)
 }
 
 // ---------- 模型页 ----------

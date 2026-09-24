@@ -489,6 +489,41 @@ step('⑫ preflight start')
   ok(e.ok && JSON.parse(readFileSync(pkgFile, 'utf8')).dsh.profile.bundles.includes('a'), '恢复插件：放回 bundles')
 }
 
+// ---------- 13. 重启路径必须走体检与自愈（4.2） ----------
+// 真实事故（2026-09-24）：从对话里「重启 Harness」后界面一直显示
+// 「正在重启 Harness……」，看起来起不来。两个独立原因：
+//   ① restartDsh 调的是裸 startDsh，绕过了启动前体检与失败自愈；
+//   ② gui 里 notice('正在重启…') 之后**没有任何代码清掉它**，横幅永久停留。
+// 这里做静态检查，防止这两处回归。
+console.log('⑬ 重启路径走体检与自愈（4.2）')
+step('⑬ restart-path start')
+{
+  const svcSrc = readFileSync(join(here, '..', 'server', 'services.mjs'), 'utf8')
+  const appSrc = readFileSync(join(here, '..', 'gui', 'app.js'), 'utf8')
+
+  // (a) restartDsh 必须用 startDshResilient，不能用裸 startDsh
+  const restartBlock = svcSrc.slice(svcSrc.indexOf('export async function restartDsh'))
+    .slice(0, svcSrc.slice(svcSrc.indexOf('export async function restartDsh')).indexOf('export async function restartLlm'))
+  ok(/startDshResilient\(/.test(restartBlock), 'restartDsh 走 startDshResilient（含体检 + 自愈）')
+  ok(!/start:\s*\(\)\s*=>\s*startDsh\(\{/.test(restartBlock), 'restartDsh 不再直接调裸 startDsh')
+  // (b) 自动恢复 / 开机自启 / startAll 也都走自愈路径
+  ok(/results\.dsh = await startDshResilient\(\)/.test(svcSrc), 'startAll 走自愈路径')
+  const mainSrc = readFileSync(join(here, '..', 'server', 'main.mjs'), 'utf8')
+  const autoCalls = (mainSrc.match(/services\.startDsh\(\{/g) ?? []).length
+  ok(autoCalls === 0, `main.mjs 不再调用裸 startDsh（实际 ${autoCalls} 处）`)
+
+  // (c) GUI：重启横幅必须能被清掉
+  ok(/function hideNotice\(/.test(appSrc), 'GUI 有 hideNotice()（横幅可收起）')
+  const restartFn = appSrc.slice(appSrc.indexOf('async function restartService'))
+    .slice(0, 2200)
+  ok(/hideNotice\(\)/.test(restartFn), 'restartService 结束时会收起横幅')
+  ok(/notice\(`\$\{label\}已重启完成`\)/.test(restartFn), '重启成功有明确完成提示')
+  ok(/重启超时|重启失败/.test(restartFn), '重启失败/超时有明确提示（不会永远停在「正在重启」）')
+
+  // (d) 令牌文件自愈：shutdown 删掉后，活着的实例要能补写回来
+  ok(/__dshTokenGuard/.test(mainSrc), '令牌文件有自愈补写（避免删掉后永久 401）')
+}
+
 console.log(`\n结果：${passed} 通过 / ${failed} 失败`)
 step(`RESULT ${passed} passed / ${failed} failed`)
 process.exit(failed === 0 ? 0 : 1)

@@ -583,7 +583,11 @@ export async function restartDsh({ openBrowser } = {}) {
     return await restartService('dsh', {
       port: Number(cfg.DSH_PORT),
       killFirst: pid => killProcessTree(pid),
-      start: () => startDsh({
+      // 4.2：重启也必须走「体检 + 自愈」路径。此前这里调的是裸 startDsh，
+      // 于是「从对话里重启 dsh」完全跳过了启动前体检与失败自愈——
+      // 插件/patch 一旦有问题，重启必然失败（2026-09-24 实际发生：
+      // cordis.patch.yml 重复键让重启卡到 90s 超时）。
+      start: () => startDshResilient({
         openBrowser: openBrowser ?? cfg.OPEN_BROWSER === '1',
         allowPortFallback: false,
       }),

@@ -750,6 +750,19 @@ export function startServer({ port = 0, onRelaunch = null } = {}) {
   ensureDirs()
   if (onRelaunch) launcherUpdate.setRelaunch(onRelaunch)
   writeFileSync(TOKEN_FILE, token, 'ascii')
+  // 4.2：令牌文件的自愈。
+  // shutdown() 会删掉 logs\launcher.token（防止新实例附着到正在退出的旧后端），
+  // 但若本实例其实没退（例如那次 shutdown 是别的路径触发的），令牌文件就永久缺失，
+  // 命令行/外部调用会一直 401，直到下次重启启动器。这里定期补写回来：
+  // 令牌值是本进程内存里的同一个 token，补写不影响已打开的页面。
+  if (!globalThis.__dshTokenGuard) {
+    globalThis.__dshTokenGuard = setInterval(() => {
+      try {
+        if (!existsSync(TOKEN_FILE)) writeFileSync(TOKEN_FILE, token, 'ascii')
+      } catch { /* 忽略：写不进去也不该影响服务 */ }
+    }, 30000)
+    globalThis.__dshTokenGuard.unref?.()
+  }
   const server = http.createServer(async (req, res) => {
     const pathname = new URL(req.url ?? '/', 'http://127.0.0.1').pathname
     try {
