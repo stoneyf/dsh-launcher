@@ -4,6 +4,10 @@
 
 ## 更新日志
 
+### 4.4.2
+- **修复模型页不显示各模型上下文**：`main.mjs` 的 `listModels()` 用了 `ctxForModel()` 却没从 `core.mjs` 导入，`try/catch` 把 `ReferenceError` 吞掉 → `GET /api/models` 的 `ctx` 全是 `null` → 模型卡片不显示上下文标签。补上导入；并加两条自测断言（静态检查导入 + 接口检查 `ctx` 非 null）防再犯。
+- 自测 **136 项**（含上述新增断言），全绿。
+
 ### 4.4.1
 - **上下文不再谎报（A）**：`syncSettings()` 现在按**服务器实际用的上下文**向 Harness 声明，而不是「按当前配置算出来的值」。`startLlm` 在 spawn 后把实际启动参数（pid/ctx/kvQuant/alias）写入 `logs\llm-run.json`；`syncSettings` 改走 `effectiveCtx()`（服务在跑→读实际值，没跑→按配置算）。修复「改了配置没重启模型→声明 180224 实际 114688→每个请求都被拒」的事故。
 - **逐模型自动上下文（B）**：`ctxForModel(path)` 按「模型体积 + 剩余显存 + KV 压缩」逐模型算最大可容纳上下文（与 `resolveCtx` 同公式，作用于任意 gguf 文件）。`buildLlmPreset()` 生成 `models\preset.ini`（`[*]` 默认 + 逐模型节），`startLlm` 在 router 模式传 `--models-preset` + `--models-autoload`——**不同体积的模型各拿各的上下文**，dsh 下拉框选谁加载谁。

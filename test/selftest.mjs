@@ -653,6 +653,18 @@ step('⑭ 4.4 features start')
   // syncSettings router 模式逐模型 contextWindow
   ok(/ctxForModel\(p\)/.test(coreSrc), 'syncSettings router 模式用 ctxForModel 逐模型算')
 
+  // 漏 import 的坑（2026-10-03 实测踩到）：main.mjs 的 listModels() 用了 ctxForModel，
+  // 但没从 core.mjs 导入 → try/catch 把 ReferenceError 吞掉 → /api/models 的 ctx 全是 null
+  // （模型页因此不显示各模型上下文）。静态 + 接口双重断言，避免再犯。
+  const mainSrcJ = readFileSync(join(here, '..', 'server', 'main.mjs'), 'utf8')
+  const coreImportBlock = mainSrcJ.split("from './core.mjs'")[0]
+  ok(/ctxForModel/.test(coreImportBlock), 'main.mjs 从 core.mjs 导入了 ctxForModel')
+  const modelsRes = await api('GET', '/api/models')
+  ok(modelsRes.status === 200 && Array.isArray(modelsRes.data) && modelsRes.data.length >= 2,
+    'GET /api/models 返回模型列表')
+  ok(modelsRes.data.every(m => Number.isInteger(m.ctx) && m.ctx > 0),
+    'GET /api/models 每个模型都带 ctx（不是 null —— 漏 import 会全 null）')
+
   // (k) D：Auto 兜底看门狗——本地模型挂掉 >30s 自动切会话到云端
   ok(/startWatchdog/.test(svcSrc), 'services.mjs 有 startWatchdog')
   ok(/stopWatchdog/.test(svcSrc), 'services.mjs 有 stopWatchdog')

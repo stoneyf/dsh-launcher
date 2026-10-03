@@ -22,7 +22,7 @@ import { spawn } from 'node:child_process'
 import {
   DIRS, ROOT, readConfig, writeConfig, ensureDirs, logPath, modelPath, syncSettings, tcpPortBusy,
   waitPortFree, sleep, LAUNCHER_VERSION, resolveCtx, resolveMaxTokens, probeModel, setAutoStart, isAutoStart,
-  estimateVram,
+  estimateVram, ctxForModel,
 } from './core.mjs'
 import * as services from './services.mjs'
 import * as gpu from './gpu.mjs'
