@@ -12,7 +12,7 @@ import { spawnSync } from 'node:child_process'
 import { createRequire } from 'node:module'
 import net from 'node:net'
 
-export const LAUNCHER_VERSION = '4.4.2'
+export const LAUNCHER_VERSION = '4.4.3'
 
 const serverDir = dirname(fileURLToPath(import.meta.url))
 /** 根目录：默认取 server 上一级；DSH_LAUNCHER_ROOT 可覆盖（与传给 dsh 进程的同名变量一致，便于测试与外部发现）。 */
@@ -67,9 +67,10 @@ export const CONFIG_DEFAULTS = {
   // 4.4：MoE 专家层放内存（--cpu-moe / -n-cpu-moe）。'' = 不启用 | all | 数字 N（前 N 层）。
   // 给将来的 MoE 模型（如 Qwen3.8-35B-A3B）预留：权重放内存可给显存腾地方。
   LLM_CPU_MOE: '',
-  // 4.4：多模型 router 模式。'1' = 用 --models-dir 指向 models 目录，
-  // llama-server 按需加载、热切换（不用重启服务）；'0' = 单模型（-m 指定一个文件）。
-  LLM_ROUTER: '0',
+  // 4.4：多模型 router 模式。'' = 自动（models 目录里有 gguf 就开，4.4.3 起默认）、
+  // '1' = 强制开（--models-dir 指向 models 目录，按需加载、热切换，不用重启服务）、
+  // '0' = 强制关（单模型，-m 指定一个文件）。
+  LLM_ROUTER: '',
   // router 模式同时驻留的模型数上限。本机 32GB 显存一次只装得下一个 27B，故默认 1。
   LLM_ROUTER_MAX: '1',
   // 追加给 llama-server 的额外命令行参数（空格分隔）。默认关掉思考链：
@@ -260,9 +261,16 @@ export function listGgufNames() {
   } catch { return [] }
 }
 
-/** 是否处于多模型 router 模式（LLM_ROUTER=1）。 */
+/** 是否处于多模型 router 模式。
+ *  '1' = 开；'0' = 关（单模型）；**留空 = 自动**（4.4.3 起的默认）：
+ *  models 目录里只要有一个 gguf 就用 router，这样 dsh 对话里的模型下拉框能列出全部本地模型、
+ *  选谁加载谁（配合 --models-preset/--models-autoload）。空目录回落单模型——否则
+ *  llama-server 会因为没有可加载的模型而起不来。 */
 export function isRouterMode() {
-  return String(readConfig().LLM_ROUTER ?? '').trim() === '1'
+  const raw = String(readConfig().LLM_ROUTER ?? '').trim()
+  if (raw === '1') return true
+  if (raw === '0') return false
+  return listGgufNames().length > 0
 }
 
 /** KV 缓存量化相对 f16 的占用系数（4.4）。q8_0 = 8bit/16bit = 0.5，依此类推。 */
@@ -522,17 +530,10 @@ export function patchProfileEntries(entries) {
     return { ok: false, reason: 'not-a-list' }
   }
   for (const entry of entries) {
-    // 同 id 可能有多条（历史遗留），Last-wins 语义：只改最后一条，其余原样保留。
-    let target = null
-    for (const row of doc) {
-      if (row && typeof row === 'object' && row.id === entry.id) target = row
-    }
-    if (target === null) {
-      doc.push({ id: entry.id, ...(entry.name ? { name: entry.name } : {}), config: entry.config })
-    } else {
-      target.config = entry.config
-      if (entry.name && target.name === undefined) target.name = entry.name
-    }
+    // Upsert by id：先删掉所有同 id 的旧行，再追加一条（last-wins 语义不变，
+    // 顺带在每次同步时清理历史遗留的重复条目——曾累积到 33 条 webserver）。
+    doc = doc.filter(row => !(row && typeof row === 'object' && row.id === entry.id))
+    doc.push({ id: entry.id, ...(entry.name ? { name: entry.name } : {}), config: entry.config })
   }
   const text = yaml.dump(doc, { lineWidth: -1, noRefs: true, quotingType: '"' })
   // 自校验：dump 出来的东西必须还能解析回等价结构，否则宁可不写。

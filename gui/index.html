@@ -24,7 +24,6 @@
     <nav id="nav">
       <a href="#home" class="nav-item active" data-page="home">🏠 主页</a>
       <a href="#models" class="nav-item" data-page="models">📦 模型</a>
-      <a href="#chat" class="nav-item" data-page="chat">💬 模型测试</a>
       <a href="#settings" class="nav-item" data-page="settings">⚙️ 设置</a>
       <a href="#maintain" class="nav-item" data-page="maintain">🛠️ 维护</a>
     </nav>
@@ -160,24 +159,6 @@
       </div>
     </section>
 
-    <!-- ============ 模型测试 ============ -->
-    <section id="page-chat" class="page">
-      <div class="page-head"><h1>模型测试</h1></div>
-      <div class="notice">单轮流式对话，用于验证本地模型连通与速度。正式使用请打开 Harness：<button class="btn btn-sm btn-primary" id="btn-open-harness-2">打开 Harness</button></div>
-      <div id="chat-log" class="chat-log"></div>
-      <div id="chat-stats" class="chat-stats"></div>
-      <div class="section-title">模型测试</div>
-      <div class="chat-controls">
-        <label>温度 <input type="number" id="chat-temp" value="0.7" min="0" max="2" step="0.1"></label>
-        <label>最大长度 <input type="number" id="chat-maxtokens" value="2048" min="64" step="64"></label>
-        <button class="btn btn-ghost btn-xs" id="btn-chat-clear">清空对话</button>
-      </div>
-      <div class="chat-input-row">
-        <textarea id="chat-input" rows="3" placeholder="输入消息，Ctrl+Enter 发送……"></textarea>
-        <button class="btn btn-primary" id="btn-chat-send">发送</button>
-      </div>
-    </section>
-
     <!-- ============ 设置 ============ -->
     <section id="page-settings" class="page">
       <div class="page-head"><h1>启动设置</h1></div>
@@ -227,9 +208,11 @@
         </select></div>
         <div class="form-hint">仅 MoE 模型（如 Qwen3.8-35B-A3B）有意义：把部分专家权重放内存，给显存腾地方。密集模型不用设。</div>
         <div class="form-row"><label>多模型热切换 LLM_ROUTER</label><select name="LLM_ROUTER">
-          <option value="0">关（单模型，默认）</option>
+          <option value="">自动（有本地模型就开，推荐）</option>
           <option value="1">开（router，models 目录全模型按需加载）</option>
+          <option value="0">关（单模型，只用 LLM_MODEL 那一个）</option>
         </select></div>
+        <div class="form-hint">开了「自动/开」之后，dsh 对话里的模型下拉框会列出 <code>models\</code> 目录里全部 gguf，选谁自动加载谁（每个模型各拿各的上下文）。</div>
         <div class="form-row"><label>同时驻留模型数 LLM_ROUTER_MAX</label><input name="LLM_ROUTER_MAX" type="number"></div>
         <div class="form-hint">router 模式有效：一次最多同时加载几个模型。本机 32GB 显存一次只装得下一个 27B，填 1 即可。</div>
         <div class="form-row"><label>视觉投影器 LLM_MMPROJ</label><input name="LLM_MMPROJ" placeholder="如 models\mmproj-xxx.gguf（相对或绝对路径；留空 = 纯文本模型）"></div>

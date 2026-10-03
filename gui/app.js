@@ -688,100 +688,6 @@ function renderHubFiles(repoId) {
   }
 }
 
-// ---------- 模型测试（多轮对话） ----------
-let chatHistory = [] // [{role:'user'|'assistant', content}]
-function appendBubble(role, text) {
-  const log = $('#chat-log')
-  const div = document.createElement('div')
-  div.className = `chat-bubble ${role}`
-  div.textContent = text
-  log.appendChild(div)
-  log.scrollTop = log.scrollHeight
-  return div
-}
-
-function clearChat() {
-  chatHistory = []
-  $('#chat-log').innerHTML = ''
-  $('#chat-stats').textContent = ''
-}
-
-async function sendChat() {
-  const input = $('#chat-input')
-  const text = input.value.trim()
-  if (!text) return
-  input.value = ''
-  $('#btn-chat-send').disabled = true
-  $('#chat-stats').textContent = ''
-  appendBubble('user', text)
-  chatHistory.push({ role: 'user', content: text })
-  const bubble = appendBubble('assistant', '')
-  let content = ''
-  let reasoning = ''
-  try {
-    const res = await fetch(`/api/chat/test?token=${encodeURIComponent(token)}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        messages: chatHistory,
-        maxTokens: Number($('#chat-maxtokens').value) || 2048,
-        temperature: Number($('#chat-temp').value ?? 0.7),
-      }),
-    })
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}))
-      throw new Error(err.error ?? `HTTP ${res.status}`)
-    }
-    const reader = res.body.getReader()
-    const decoder = new TextDecoder()
-    let buf = ''
-    let lastEvent = ''
-    const handleEvent = (evt, data) => {
-      if (evt === 'delta') { content += data.text; bubble.textContent = content; bubble.scrollIntoView({ block: 'end' }) }
-      else if (evt === 'reasoning') reasoning += data.text
-      else if (evt === 'done') {
-        lastEvent = JSON.stringify(data)
-        const bits = []
-        if (data.usage?.completion_tokens) bits.push(`${data.usage.completion_tokens} tokens`)
-        if (data.usage?.prompt_tokens) bits.push(`提示 ${data.usage.prompt_tokens} tokens`)
-        if (data.tokensPerSec) bits.push(`${data.tokensPerSec} tok/s`)
-        if (data.elapsedSec) bits.push(`${data.elapsedSec}s`)
-        $('#chat-stats').textContent = bits.join(' · ')
-      }
-    }
-    for (;;) {
-      const { done, value } = await reader.read()
-      if (done) break
-      buf += decoder.decode(value, { stream: true })
-      const lines = buf.split('\n')
-      buf = lines.pop() ?? ''
-      let pendingEvent = null
-      for (const line of lines) {
-        if (line.startsWith('event:')) pendingEvent = line.slice(6).trim()
-        else if (line.startsWith('data:')) {
-          try { handleEvent(pendingEvent, JSON.parse(line.slice(5).trim())) } catch { /* 忽略 */ }
-          pendingEvent = null
-        }
-      }
-    }
-    if (reasoning) {
-      const details = document.createElement('details')
-      details.innerHTML = `<summary>思考过程（${reasoning.length} 字）</summary><div class="thinking">${esc(reasoning)}</div>`
-      bubble.appendChild(details)
-    }
-    if (!content) {
-      bubble.textContent = '（模型未输出内容）'
-      chatHistory.pop() // 移除无效的这轮用户输入，避免污染上下文
-    } else {
-      chatHistory.push({ role: 'assistant', content })
-    }
-  } catch (error) {
-    bubble.textContent = `请求失败：${error.message}`
-    chatHistory.pop()
-  }
-  $('#btn-chat-send').disabled = false
-}
-
 // ---------- 设置 ----------
 async function loadSettings() {
   const cfg = status?.config ?? await api('GET', '/api/config')
@@ -1296,7 +1202,6 @@ function bindEvents() {
   $('#btn-llm-restart').addEventListener('click', () => restartService('llm'))
   $('#btn-dsh-restart').addEventListener('click', () => restartService('dsh'))
   $('#btn-open-harness').addEventListener('click', openHarness)
-  $('#btn-open-harness-2').addEventListener('click', openHarness)
   $('#btn-copy-llm').addEventListener('click', async () => {
     try { await navigator.clipboard.writeText(status?.services.llm.endpoint ?? ''); notice('已复制端点') } catch { /* 忽略 */ }
   })
@@ -1346,11 +1251,6 @@ function bindEvents() {
       $('#settings-msg').textContent = `保存失败：${err.message}`
       $('#settings-msg').className = 'msg err'
     }
-  })
-  $('#btn-chat-send').addEventListener('click', sendChat)
-  $('#btn-chat-clear').addEventListener('click', clearChat)
-  $('#chat-input').addEventListener('keydown', e => {
-    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); sendChat() }
   })
   document.querySelectorAll('.console-tab').forEach(t => t.addEventListener('click', () => switchLogTab(t.dataset.log)))
   $('#btn-console-clear').addEventListener('click', () => { $('#console-body').textContent = '' })

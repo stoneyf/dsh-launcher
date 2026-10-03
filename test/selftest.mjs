@@ -673,6 +673,17 @@ step('⑭ 4.4 features start')
   const mainSrc = readFileSync(join(here, '..', 'server', 'main.mjs'), 'utf8')
   ok(/services\.startWatchdog\(\)/.test(mainSrc), 'main.mjs 在服务启动时启动看门狗')
 
+  // (l) 4.4.3：profile 去重回补 + router 自动默认 + 模型测试页移除
+  ok(/doc = doc\.filter\(/.test(coreSrc), 'patchProfileEntries 用 filter 去重（不再累积重复条目）')
+  ok(!/只改最后一条/.test(coreSrc), '旧的 last-wins 实现已移除')
+  ok(/if \(raw === '1'\) return true/.test(coreSrc) && /listGgufNames\(\)\.length > 0/.test(coreSrc),
+    'LLM_ROUTER 留空 = 自动（有 gguf 就开 router）')
+  const html433 = readFileSync(join(here, '..', 'gui', 'index.html'), 'utf8')
+  const app433 = readFileSync(join(here, '..', 'gui', 'app.js'), 'utf8')
+  ok(!/page-chat/.test(html433), '「模型测试」页已从 index.html 移除')
+  ok(!/sendChat|chatHistory|chat-log/.test(app433), '「模型测试」页的 JS 已移除')
+  ok(/name="LLM_ROUTER"/.test(html433) && /自动（有本地模型就开/.test(html433), '设置页 LLM_ROUTER 有「自动」选项')
+
   // 复位：router 关掉，避免影响后续
   await api('PUT', '/api/config', { LLM_ROUTER: '0', LLM_KV_QUANT: '' })
 }
