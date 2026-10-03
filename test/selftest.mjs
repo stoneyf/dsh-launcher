@@ -719,6 +719,14 @@ step('⑭ 4.4 features start')
   ok(/function emit\(t\)/.test(readFileSync(join(here, '..', 'server', 'downloads.mjs'), 'utf8')), 'downloads.mjs 非 running 状态统一落盘')
   try { rmSync(dlStore, { force: true }) } catch { /* 忽略 */ }
 
+  // (o) 4.4.6：router 模式不能传全局 --ctx-size（命令行优先级高于 preset.ini，
+  //     会把逐模型的 ctx-size 全部覆盖掉；实测加了全局 262144 后，preset 写 65536 的
+  //     Q8_0 也变成 262144，大模型会把 KV 撑爆）。
+  const svcSrc446 = readFileSync(join(here, '..', 'server', 'services.mjs'), 'utf8')
+  ok(/if \(!router\) args\.push\('--ctx-size'/.test(svcSrc446), 'router 模式不传全局 --ctx-size（逐模型 preset 才生效）')
+  ok(!/'--ctx-size', String\(ctx\)/.test(svcSrc446) || /if \(!router\) args\.push\('--ctx-size', String\(ctx\)\)/.test(svcSrc446),
+    '单模型模式仍显式给 -c（不给会用模型原生上限，KV 吃满显存）')
+
   // 复位：router 关掉，避免影响后续
   await api('PUT', '/api/config', { LLM_ROUTER: '0', LLM_KV_QUANT: '' })
 }

@@ -270,12 +270,16 @@ export async function startLlm() {
   args.push(
     '--host', cfg.LLM_HOST,
     '--port', String(cfg.LLM_PORT),
-    // router 模式尤其要注意：不显式给 -c 会用模型原生上限（本机 262144），KV 直接吃满显存。
-    '--ctx-size', String(ctx),
     '--n-gpu-layers', String(cfg.LLM_NGPU),
     '--parallel', String(cfg.LLM_PARALLEL),
     '--jinja',
   )
+  // router 模式**绝对不能**给全局 -c：命令行优先级高于 preset.ini，会把逐模型的
+  // ctx-size 全部覆盖掉（2026-10-04 实测：加了全局 --ctx-size 262144 后，preset 里写
+  //  65536 的 Q8_0 也变成 262144，大模型会因此把 KV 撑爆；同理传 0 也会覆盖成“原生”）。
+  // 只有完全不传，preset 的逐模型节才会生效（`[*]` 节已写 ctx-size = 0 作缺省）。
+  // 单模型模式仍然要显式给 -c：不给就用模型原生上限，KV 直接吃满显存。
+  if (!router) args.push('--ctx-size', String(ctx))
   // 4.4：KV 缓存量化。llama.cpp 要求 KV 量化必须配合 Flash Attention，这里自动补上 -fa on。
   const kvq = String(cfg.LLM_KV_QUANT ?? '').trim()
   if (kvq) args.push('-ctk', kvq, '-ctv', kvq, '-fa', 'on')
