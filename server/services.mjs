@@ -175,19 +175,29 @@ async function llmHttpJson(path, method = 'GET', body = undefined) {
 }
 
 /** 4.4：查询 llama-server 里各模型的状态（unloaded/loading/loaded）。
- *  llama.cpp 的 GET /models 返回 { models: [{ id, loaded, ... }] }；解析失败返回 null。 */
+ *  **实测（llama.cpp b11247）**：GET /models 返回 OpenAI 风格的 `{ data: [...] }`，
+ *  每项的 `status` 是个**对象** `{ value: 'unloaded'|'loading'|'loaded', args: [...], preset: '...' }`。
+ *  （早先按 `{ models: [...] }` + 字符串 status 解析，导致接口恒返回 null。）
+ *  解析失败返回 null。 */
 export async function routerModels() {
   if (!isRouterMode()) return null
   const r = await llmHttpJson('/models')
   if (r.status !== 200 || r.body == null) return null
-  const raw = Array.isArray(r.body) ? r.body : (Array.isArray(r.body.models) ? r.body.models : null)
+  const raw = Array.isArray(r.body) ? r.body
+    : Array.isArray(r.body.data) ? r.body.data
+    : Array.isArray(r.body.models) ? r.body.models
+    : null
   if (!raw) return null
-  return raw.map(m => ({
-    id: m.id ?? m.model ?? m.name ?? '',
-    loaded: Boolean(m.loaded ?? m.status === 'loaded'),
-    loading: Boolean(m.loading ?? m.status === 'loading'),
-    status: m.status ?? (m.loaded ? 'loaded' : m.loading ? 'loading' : 'unloaded'),
-  }))
+  return raw.map(m => {
+    const sv = m?.status !== null && typeof m?.status === 'object' ? m.status.value : m.status
+    const status = sv ?? (m.loaded ? 'loaded' : m.loading ? 'loading' : 'unloaded')
+    return {
+      id: m.id ?? m.model ?? m.name ?? '',
+      loaded: status === 'loaded',
+      loading: status === 'loading',
+      status,
+    }
+  })
 }
 
 /** 4.4：加载/卸载某个模型（异步，llama-server 立即返回，需轮询状态）。 */

@@ -8,7 +8,8 @@
 - **删掉「模型测试」页**：正式对话请在 Harness 里进行，启动器不再自带测试聊天页（导航从 5 项减为 4 项：主页/模型/设置/维护）。
 - **`LLM_ROUTER` 默认改为「自动」**：留空 = `models\` 目录里只要有 gguf 就开 router，于是 **dsh 对话里的模型下拉框会列出全部本地模型**（选谁自动加载谁，每个模型各拿各的上下文）；目录为空时回落单模型（避免 llama-server 无模型可加载而起不来）。设置页下拉框新增「自动（有本地模型就开，推荐）」选项。
 - **回补 profile 去重修复**：`patchProfileEntries` 改回 **upsert by id**（先按 id 删旧行再追加），修掉「同 id 只改最后一条、历史重复条目永久堆积」的问题。此前该修复只存在于 launcher-dev 分支、未进生产，实测 profile 里已累积 **33 条完全相同的 `webserver` 条目**。
-- 自测 139 → **145 项**，全绿。
+- **修 router 模型状态条恒为「读不到模型列表」**：`routerModels()` 原按 `{ models: [...] }` + 字符串 `status` 解析，而 llama.cpp b11247 实际返回 OpenAI 风格的 `{ data: [...] }`，每项 `status` 是对象 `{ value, args, preset }` → 解析恒失败返回 `null`。已按实测格式解析（顺带从 `preset` 字段能直接看到每个模型拿到的 `ctx-size`）。
+- 自测 139 → **147 项**，全绿。
 
 ### 4.4.2
 - **修复模型页不显示各模型上下文**：`main.mjs` 的 `listModels()` 用了 `ctxForModel()` 却没从 `core.mjs` 导入，`try/catch` 把 `ReferenceError` 吞掉 → `GET /api/models` 的 `ctx` 全是 `null` → 模型卡片不显示上下文标签。补上导入；并加两条自测断言（静态检查导入 + 接口检查 `ctx` 非 null）防再犯。

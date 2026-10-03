@@ -683,6 +683,9 @@ step('⑭ 4.4 features start')
   ok(!/page-chat/.test(html433), '「模型测试」页已从 index.html 移除')
   ok(!/sendChat|chatHistory|chat-log/.test(app433), '「模型测试」页的 JS 已移除')
   ok(/name="LLM_ROUTER"/.test(html433) && /自动（有本地模型就开/.test(html433), '设置页 LLM_ROUTER 有「自动」选项')
+  // routerModels 解析（实测 llama.cpp 返回 { data: [...] }，status 是对象）
+  ok(/Array\.isArray\(r\.body\.data\)/.test(svcSrc), 'routerModels 兼容 llama.cpp 的 { data: [...] } 格式')
+  ok(/m\.status\.value/.test(svcSrc), 'routerModels 读取 status.value（对象而非字符串）')
 
   // 复位：router 关掉，避免影响后续
   await api('PUT', '/api/config', { LLM_ROUTER: '0', LLM_KV_QUANT: '' })
