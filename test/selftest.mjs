@@ -687,6 +687,18 @@ step('⑭ 4.4 features start')
   ok(/Array\.isArray\(r\.body\.data\)/.test(svcSrc), 'routerModels 兼容 llama.cpp 的 { data: [...] } 格式')
   ok(/m\.status\.value/.test(svcSrc), 'routerModels 读取 status.value（对象而非字符串）')
 
+  // (m) 4.4.4：下载任务独立成区 + 视觉体系 token 化
+  const css444 = readFileSync(join(here, '..', 'gui', 'styles.css'), 'utf8')
+  ok(/id="downloads-list"/.test(html433), 'index.html 有独立的下载任务容器 #downloads-list')
+  ok(/id="downloads-section"/.test(html433), 'index.html 有 #downloads-section（无任务时整块隐藏）')
+  ok(/\$\('#downloads-list'\)/.test(app433), '下载条挂在 #downloads-list（不再挂在模型广场搜索结果里）')
+  ok(!/\$\('#hub-files-list'\)\s*\n\s*let bar = downloadBars/.test(app433), '下载条不再用搜索结果容器')
+  ok(/loadDownloadBars\(\)\s*\/\/ 进模型页/.test(app433) || /loadDownloadBars\(\)/.test(app433), 'goPage(models) 会恢复下载条')
+  ok(/--radius-lg:/.test(css444) && /--fs-md:/.test(css444) && /--mono:/.test(css444), '样式表有统一设计 token（圆角/字号/等宽）')
+  ok(/--danger: var\(--red\)/.test(css444) && /--warn: var\(--yellow\)/.test(css444), '--danger/--warn 已正式定义（不再靠 fallback）')
+  ok(!/\.chat-bubble/.test(css444), '已删除作废的模型测试页样式')
+  ok(/\.form-row > label:first-child \{ white-space: nowrap/.test(css444), '设置页首个标签不换行（修竖排挤压）')
+
   // 复位：router 关掉，避免影响后续
   await api('PUT', '/api/config', { LLM_ROUTER: '0', LLM_KV_QUANT: '' })
 }

@@ -220,6 +220,7 @@ function goPage(name) {
   document.querySelectorAll('.page').forEach(p => p.classList.toggle('active', p.id === `page-${name}`))
   if (name === 'models') {
     loadInstalled(); renderPresets()
+    loadDownloadBars()   // 进模型页就恢复进行中的下载条（独立成区，不受搜索影响）
     if (!hubEverSearched) hubSearch()
   }
   if (name === 'settings') loadSettings()
@@ -433,13 +434,27 @@ async function startDownload(url, dest, label) {
   }
 }
 
+/** 下载任务区的显隐：有任务才显示整块（含标题），并更新统计小字。 */
+function syncDownloadsSection() {
+  const section = $('#downloads-section')
+  if (!section) return
+  const n = downloadBars.size
+  section.classList.toggle('hidden', n === 0)
+  const note = $('#downloads-note')
+  if (note) {
+    const running = [...downloadBars.values()].filter(b => b.state === 'running').length
+    note.textContent = n === 0 ? '' : running > 0 ? `（${running} 个进行中 / 共 ${n} 个）` : `（${n} 个，均已结束）`
+  }
+}
+
 function ensureDownloadBar(fileName, id, url, label = 'download') {
-  const container = $('#hub-files-list')
+  const container = $('#downloads-list')
   let bar = downloadBars.get(fileName)
   if (bar) {
     bar.taskId = id
     bar.url = url
     bar.label = label
+    syncDownloadsSection()
     return
   }
   const outer = document.createElement('div')
@@ -462,18 +477,21 @@ function ensureDownloadBar(fileName, id, url, label = 'download') {
     sizeEl: outer.querySelector('.size'),
     action: outer.querySelector('.dl-action'),
     del: outer.querySelector('.dl-delete'),
-    taskId: id, url, label,
+    taskId: id, url, label, state: 'running',
   }
   downloadBars.set(fileName, bar)
+  syncDownloadsSection()
   bar.action.addEventListener('click', async () => {
     if (bar.action.dataset.act === 'cancel') {
       if (bar.taskId) await api('POST', `/api/downloads/${encodeURIComponent(bar.taskId)}/cancel`)
     } else if (bar.action.dataset.act === 'resume') {
       const task = await api('POST', '/api/downloads', { url: bar.url, label: bar.label })
       bar.taskId = task.id
+      bar.state = 'running'
       bar.inner.style.width = '4%'
       bar.action.textContent = '取消'
       bar.action.dataset.act = 'cancel'
+      syncDownloadsSection()
     }
   })
   bar.del.addEventListener('click', async () => {
@@ -487,11 +505,13 @@ function removeDownloadBar(fileName) {
   if (bar) bar.outer.remove()
   downloadBars.delete(fileName)
   downloadSpeed.delete(fileName)
+  syncDownloadsSection()
 }
 
 function onDownloadTask(task) {
   const bar = [...downloadBars.values()].find(b => b.taskId === task.id)
   if (!bar) return
+  bar.state = task.state
   const pct = task.total ? Math.round(task.downloaded / task.total * 100) : 0
   bar.inner.style.width = `${task.total ? pct : 4}%`
   if (task.state === 'running') {
@@ -526,6 +546,7 @@ function onDownloadTask(task) {
     bar.action.dataset.act = 'resume'
     bar.action.style.display = ''
   }
+  syncDownloadsSection()
 }
 
 // ---------- 模型广场：搜索历史 + 分页 ----------

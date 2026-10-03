@@ -133,6 +133,11 @@
         <input type="text" id="import-path" placeholder="本地 GGUF 文件完整路径（如 D:\models\xxx.gguf）">
         <button class="btn btn-sm" id="btn-import">导入本地 GGUF</button>
       </div>
+      <!-- 下载任务独立成区：以前挂在「模型广场」的搜索结果容器里，一搜索就被清掉 -->
+      <div id="downloads-section" class="hidden">
+        <div class="section-title">下载任务 <span class="section-note" id="downloads-note"></span></div>
+        <div id="downloads-list" class="hub-files-list"></div>
+      </div>
       <div class="section-title">模型广场 <label class="checkbox-label"><input type="checkbox" id="hub-allowlist"> 仅白名单仓库</label></div>
       <div class="hub-search-row">
         <input type="text" id="hub-query" placeholder="搜索 Hugging Face 模型（如 qwen3-abliterated）" value="abliterated">
