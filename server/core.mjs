@@ -12,7 +12,7 @@ import { spawnSync } from 'node:child_process'
 import { createRequire } from 'node:module'
 import net from 'node:net'
 
-export const LAUNCHER_VERSION = '4.4.6'
+export const LAUNCHER_VERSION = '4.4.7'
 
 const serverDir = dirname(fileURLToPath(import.meta.url))
 /** 根目录：默认取 server 上一级；DSH_LAUNCHER_ROOT 可覆盖（与传给 dsh 进程的同名变量一致，便于测试与外部发现）。 */
@@ -301,6 +301,19 @@ export function getTotalVramMiB() {
   } catch { return 0 }
 }
 
+/** KV 缓存可用的显存预算（**单一真相源**，resolveCtx 与 ctxForModel 共用）。
+ *  两条约束取更小者：
+ *   ① 总显存 − 模型占用 − 固定安全余量 1024MiB；
+ *   ② 总显存的 95% − 模型占用（留 5% 给桌面/浏览器/其它程序）。
+ *  为什么要加 ②：实测 Qwen3-Coder-30B-A3B（24.5GB）只按 ① 算时占到了
+ *  31966/32607 MiB（**97.9%**），只剩 0.6GB —— 桌面稍一用显存就有 OOM 风险。 */
+const VRAM_USAGE_RATIO = 0.95
+function kvBudgetFor(totalVram, modelVramMiB) {
+  const byMargin = totalVram - modelVramMiB - 1024
+  const byRatio = totalVram * VRAM_USAGE_RATIO - modelVramMiB
+  return Math.min(byMargin, byRatio)
+}
+
 /** 解析上下文窗口：LLM_CTX=auto 时按显存自动计算（取能容纳的最大 16K 整数倍），否则用固定值。
  *  4.4：KV 缓存量化（LLM_KV_QUANT）后每 token 的 KV 占用按系数下降，
  *  这里同步折算——否则「省下来的显存白省」，auto 算出的上下文不会变大。 */
@@ -314,9 +327,8 @@ export function resolveCtx() {
   const modelBytes = existsSync(target) ? statSync(target).size : 0
   if (!probe?.kv_per_token || !totalVram || !modelBytes) return 131072  // 兜底：探测不到用 128K
   const overheadMiB = 1536   // CUDA 上下文 + embedding + 杂项开销
-  const safetyMiB = 1024     // 额外预留余量
   const modelVramMiB = modelBytes / 1048576 + overheadMiB
-  const kvBudgetMiB = totalVram - modelVramMiB - safetyMiB
+  const kvBudgetMiB = kvBudgetFor(totalVram, modelVramMiB)
   if (kvBudgetMiB <= 0) return 8192
   const kvPerToken = probe.kv_per_token * kvQuantFactor()
   let ctx = Math.floor(kvBudgetMiB * 1048576 / kvPerToken)
@@ -336,9 +348,8 @@ export function ctxForModel(modelPath) {
   const modelBytes = existsSync(modelPath) ? statSync(modelPath).size : 0
   if (!probe?.kv_per_token || !totalVram || !modelBytes) return 131072  // 兜底
   const overheadMiB = 1536
-  const safetyMiB = 1024
   const modelVramMiB = modelBytes / 1048576 + overheadMiB
-  const kvBudgetMiB = totalVram - modelVramMiB - safetyMiB
+  const kvBudgetMiB = kvBudgetFor(totalVram, modelVramMiB)
   if (kvBudgetMiB <= 0) return 8192
   const kvPerToken = probe.kv_per_token * kvQuantFactor()
   let ctx = Math.floor(kvBudgetMiB * 1048576 / kvPerToken)
