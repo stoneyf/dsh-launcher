@@ -831,6 +831,9 @@ export function startServer({ port = 0, onRelaunch = null } = {}) {
         if (!restored && process.argv.includes('--silent')) void ensureAutoStartServices()
         // D（4.5）：Auto 兜底看门狗——本地模型挂掉 >30s 时自动切会话到云端
         services.startWatchdog()
+        // 4.4.5：恢复上次未结束的下载任务（重启前 running → paused，可续传）
+        const restoredDl = downloads.restoreTasks()
+        if (restoredDl > 0) console.log(`[launcher] 恢复了 ${restoredDl} 个未完成的下载任务（可续传）`)
       }, 1000)
       resolveServer({ server, port: server.address().port, token })
     })

@@ -437,12 +437,18 @@ async function startDownload(url, dest, label) {
 /** 下载任务区的显隐：有任务才显示整块（含标题），并更新统计小字。 */
 function syncDownloadsSection() {
   const section = $('#downloads-section')
+  const running = [...downloadBars.values()].filter(b => b.state === 'running').length
+  // 导航徽标：侧边栏不打开模型页也能看到有几个任务在跑
+  const badge = $('#nav-dl-badge')
+  if (badge) {
+    badge.textContent = running > 0 ? String(running) : ''
+    badge.classList.toggle('hidden', running === 0)
+  }
   if (!section) return
   const n = downloadBars.size
   section.classList.toggle('hidden', n === 0)
   const note = $('#downloads-note')
   if (note) {
-    const running = [...downloadBars.values()].filter(b => b.state === 'running').length
     note.textContent = n === 0 ? '' : running > 0 ? `（${running} 个进行中 / 共 ${n} 个）` : `（${n} 个，均已结束）`
   }
 }
@@ -537,6 +543,12 @@ function onDownloadTask(task) {
     setTimeout(async () => { await loadInstalled() }, 800)
   } else if (task.state === 'cancelled') {
     bar.sizeEl.textContent = `已取消（${fmtBytes(task.downloaded)}）`
+    bar.action.textContent = '续传'
+    bar.action.dataset.act = 'resume'
+    bar.action.style.display = ''
+  } else if (task.state === 'paused') {
+    // 启动器重启/退出前没下完：断点还在，点「续传」接着下
+    bar.sizeEl.textContent = `已暂停（重启前未完成，${fmtBytes(task.downloaded)}${task.total ? ` / ${fmtBytes(task.total)}` : ''}）`
     bar.action.textContent = '续传'
     bar.action.dataset.act = 'resume'
     bar.action.style.display = ''
@@ -1346,13 +1358,13 @@ async function openHarness() {
   } catch (e) { notice(e.message, true) }
 }
 
-/** 页面重载后恢复进行中的下载条（服务端任务列表）。 */
+/** 页面重载后恢复下载条（服务端任务列表；含重启后恢复出来的「已暂停」任务）。 */
 async function loadDownloadBars() {
   try {
     const tasks = await api('GET', '/api/downloads')
     for (const t of tasks) {
       ensureDownloadBar(t.fileName, t.id, t.url, t.label)
-      if (t.state === 'running') onDownloadTask(t)
+      onDownloadTask(t)
     }
   } catch { /* 忽略 */ }
 }

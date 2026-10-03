@@ -124,7 +124,13 @@ body {
 .nav-item {
   color: var(--text-dim); text-decoration: none;
   padding: 9px 12px; border-radius: var(--radius-sm); font-size: var(--fs-md);
+  display: flex; align-items: center; gap: var(--gap-xs);
   transition: background var(--speed), color var(--speed);
+}
+.nav-badge {
+  margin-left: auto; background: var(--accent); color: #fff;
+  border-radius: 99px; font-size: 10px; line-height: 16px;
+  padding: 0 6px; min-width: 16px; text-align: center; font-weight: 600;
 }
 .nav-item:hover { background: var(--bg3); color: var(--text); }
 .nav-item.active { background: var(--accent-soft); color: var(--accent-2); font-weight: 600; }

@@ -4,7 +4,7 @@
  */
 import { EventEmitter } from 'node:events'
 import { spawn } from 'node:child_process'
-import { createWriteStream, statSync, renameSync, existsSync, mkdirSync, unlinkSync } from 'node:fs'
+import { createWriteStream, statSync, renameSync, existsSync, mkdirSync, unlinkSync, readFileSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
 import { DIRS, logPath, readConfig } from './core.mjs'
 
@@ -12,6 +12,55 @@ export const downloadEvents = new EventEmitter()
 
 const tasks = new Map()
 let seq = 0
+
+/** 任务账本落盘位置（4.4.5）：只在**非 running** 状态写盘。
+ *  为什么需要：任务表原本只在内存里，启动器一重启/崩溃，未完成的下载就从界面上凭空消失
+ *  （.part 断点其实还在，但用户不知道有这回事、也没法点续传）。 */
+const storeFile = () => join(DIRS.logs, 'downloads.json')
+
+function persist() {
+  try {
+    const rows = [...tasks.values()].filter(t => t.state !== 'running').map(serialize)
+    writeFileSync(storeFile(), JSON.stringify(rows, null, 2), 'utf8')
+  } catch { /* 落盘失败不影响下载本身 */ }
+}
+
+/** 启动时恢复上一次未结束的下载任务：重启前 running 的记为 paused（可点续传）。 */
+export function restoreTasks() {
+  let rows = []
+  try { rows = JSON.parse(readFileSync(storeFile(), 'utf8')) } catch { return 0 }
+  if (!Array.isArray(rows)) return 0
+  let n = 0
+  for (const r of rows) {
+    if (!r || !r.id || !r.url || !r.dest) continue
+    if (r.state === 'done') continue          // 完成的不恢复（模型已在磁盘上，重启后重新扫描即可）
+    const m = /^dl-(\d+)$/.exec(String(r.id))
+    if (m) seq = Math.max(seq, Number(m[1]))  // 接着上次的编号，避免 id 撞车
+    tasks.set(r.id, {
+      id: r.id,
+      label: r.label ?? 'download',
+      url: r.url,
+      dest: r.dest,
+      state: 'paused',
+      downloaded: Number(r.downloaded) || 0,
+      total: Number(r.total) || null,
+      error: null,
+      startedAt: Number(r.startedAt) || Date.now(),
+      finishedAt: r.finishedAt ?? null,
+      proc: null,
+      timer: null,
+    })
+    n++
+  }
+  return n
+}
+
+/** 统一的“发事件”出口：非 running 状态顺手落盘（running 每秒都在变，不写）。 */
+function emit(t) {
+  const s = serialize(t)
+  if (s.state !== 'running') persist()
+  downloadEvents.emit('task', s)
+}
 
 function curlExe() {
   return join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'curl.exe')
@@ -133,7 +182,7 @@ export function startDownload({ url, dest, label = 'download' }) {
         t.total = t.downloaded
         t.state = 'done'
         t.finishedAt = Date.now()
-        downloadEvents.emit('task', serialize(t))
+        emit(t)
         return
       }
       // 中国镜像（hf-mirror 等）直连更快，proxyForUrl 自动判定是否绕过代理
@@ -149,19 +198,19 @@ export function startDownload({ url, dest, label = 'download' }) {
         t.error = error.message
         t.state = 'failed'
         t.finishedAt = Date.now()
-        downloadEvents.emit('task', serialize(t))
+        emit(t)
       })
       t.timer = setInterval(() => {
         try {
           t.downloaded = statSync(part).size
-          downloadEvents.emit('task', serialize(t))
+          emit(t)
         } catch { /* 文件未创建 */ }
       }, 1000)
       proc.on('exit', code => {
         clearInterval(t.timer)
         if (t.state === 'cancelled') {
           t.finishedAt = Date.now()
-          downloadEvents.emit('task', serialize(t))
+          emit(t)
           return
         }
         if (code === 0) {
@@ -178,13 +227,13 @@ export function startDownload({ url, dest, label = 'download' }) {
           t.error = `curl 退出码 ${code}（可再次启动续传）`
         }
         t.finishedAt = Date.now()
-        downloadEvents.emit('task', serialize(t))
+        emit(t)
       })
     } catch (error) {
       t.state = 'failed'
       t.error = error.message
       t.finishedAt = Date.now()
-      downloadEvents.emit('task', serialize(t))
+      emit(t)
     }
   })()
 
@@ -199,7 +248,7 @@ export function cancelDownload(id) {
   setTimeout(() => {
     try { t.proc?.kill('SIGKILL') } catch { /* 已退出 */ }
   }, 3000)
-  downloadEvents.emit('task', serialize(t))
+  emit(t)
   return true
 }
 
@@ -218,6 +267,7 @@ export function deleteTask(id) {
     if (existsSync(part)) unlinkSync(part)
   } catch { /* 忽略 */ }
   tasks.delete(id)
+  persist()   // 账本里也要移除，否则重启后又被「恢复」出来
   downloadEvents.emit('task', { ...serialize(t), state: 'deleted' })
   return { deleted: true }
 }

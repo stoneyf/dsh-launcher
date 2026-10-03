@@ -699,6 +699,26 @@ step('⑭ 4.4 features start')
   ok(!/\.chat-bubble/.test(css444), '已删除作废的模型测试页样式')
   ok(/\.form-row > label:first-child \{ white-space: nowrap/.test(css444), '设置页首个标签不换行（修竖排挤压）')
 
+  // (n) 4.4.5：下载任务账本持久化——重启后未完成的任务要能恢复成「已暂停（可续传）」
+  const dlMod = await import(pathToFileURL(join(here, '..', 'server', 'downloads.mjs')).href)
+  const dlStore = join(FIXTURE, 'logs', 'downloads.json')
+  mkdirSync(join(FIXTURE, 'logs'), { recursive: true })
+  writeFileSync(dlStore, JSON.stringify([
+    { id: 'dl-7', label: 'resume-me', url: 'https://example.com/a.gguf', dest: join(FIXTURE, 'models', 'a.gguf'), state: 'running', downloaded: 1234, total: 999999 },
+    { id: 'dl-8', label: 'already-done', url: 'https://example.com/b.gguf', dest: join(FIXTURE, 'models', 'b.gguf'), state: 'done', downloaded: 10, total: 10 },
+  ]), 'utf8')
+  const restoredCount = dlMod.restoreTasks()
+  ok(restoredCount === 1, '启动时只恢复未结束的任务（done 的跳过）')
+  const restoredTask = dlMod.taskList().find(t => t.id === 'dl-7')
+  ok(restoredTask?.state === 'paused', '重启前 running 的任务恢复为 paused（可续传）')
+  ok(restoredTask?.url === 'https://example.com/a.gguf' && restoredTask?.downloaded === 1234,
+    '恢复的任务保留 url 与已下载字节数（续传要用）')
+  ok(!dlMod.taskList().some(t => t.id === 'dl-8'), '已完成任务不进入恢复列表')
+  ok(/restoreTasks\(\)/.test(mainSrc), 'main.mjs 启动时调用 restoreTasks')
+  ok(/state === 'paused'/.test(app433), '前端有「已暂停」状态与续传按钮')
+  ok(/function emit\(t\)/.test(readFileSync(join(here, '..', 'server', 'downloads.mjs'), 'utf8')), 'downloads.mjs 非 running 状态统一落盘')
+  try { rmSync(dlStore, { force: true }) } catch { /* 忽略 */ }
+
   // 复位：router 关掉，避免影响后续
   await api('PUT', '/api/config', { LLM_ROUTER: '0', LLM_KV_QUANT: '' })
 }
