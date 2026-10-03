@@ -128,6 +128,7 @@
     <section id="page-models" class="page">
       <div class="page-head"><h1>模型管理</h1></div>
       <div class="section-title">已安装模型</div>
+      <div id="router-box" class="router-box hidden"></div>
       <div id="installed-list" class="model-grid">加载中……</div>
       <div class="import-row">
         <input type="text" id="import-path" placeholder="本地 GGUF 文件完整路径（如 D:\models\xxx.gguf）">
@@ -197,6 +198,7 @@
           <option value="262144">256K（模型上限）</option>
         </select></div>
         <div class="form-hint" id="ctx-hint"></div>
+        <div class="form-hint" id="vram-hint"></div>
         <div class="form-row"><label>最大输出 LLM_MAXTOKENS</label><select name="LLM_MAXTOKENS">
           <option value="auto">自动（用模型上限，推荐）</option>
           <option value="4096">4K</option>
@@ -209,6 +211,27 @@
         <div class="form-hint" id="maxtok-hint"></div>
         <div class="form-row"><label>GPU 层数 LLM_NGPU</label><input name="LLM_NGPU" type="number"></div>
         <div class="form-row"><label>并行数 LLM_PARALLEL</label><input name="LLM_PARALLEL" type="number"></div>
+        <div class="form-row"><label>KV 缓存压缩 LLM_KV_QUANT</label><select name="LLM_KV_QUANT">
+          <option value="">不压缩（f16，默认）</option>
+          <option value="q8_0">q8_0（省约一半显存，推荐）</option>
+          <option value="q5_0">q5_0</option>
+          <option value="q4_0">q4_0（省最多，略损精度）</option>
+        </select></div>
+        <div class="form-hint">压缩 KV 缓存：省下的显存会自动换成更大的上下文窗口。实测 Q6_K 开 q8_0 后从 29.6GB 降到 26.7GB，速度几乎无感。</div>
+        <div class="form-row"><label>MoE 专家放内存 LLM_CPU_MOE</label><select name="LLM_CPU_MOE">
+          <option value="">不启用（默认）</option>
+          <option value="all">全部放内存</option>
+          <option value="1">前 1 层</option>
+          <option value="4">前 4 层</option>
+          <option value="8">前 8 层</option>
+        </select></div>
+        <div class="form-hint">仅 MoE 模型（如 Qwen3.8-35B-A3B）有意义：把部分专家权重放内存，给显存腾地方。密集模型不用设。</div>
+        <div class="form-row"><label>多模型热切换 LLM_ROUTER</label><select name="LLM_ROUTER">
+          <option value="0">关（单模型，默认）</option>
+          <option value="1">开（router，models 目录全模型按需加载）</option>
+        </select></div>
+        <div class="form-row"><label>同时驻留模型数 LLM_ROUTER_MAX</label><input name="LLM_ROUTER_MAX" type="number"></div>
+        <div class="form-hint">router 模式有效：一次最多同时加载几个模型。本机 32GB 显存一次只装得下一个 27B，填 1 即可。</div>
         <div class="form-row"><label>视觉投影器 LLM_MMPROJ</label><input name="LLM_MMPROJ" placeholder="如 models\mmproj-xxx.gguf（相对或绝对路径；留空 = 纯文本模型）"></div>
         <div class="form-hint">mmproj 是视觉模型的投影器权重（.gguf）。配置后「启动/重启本地模型」会带 --mmproj 参数，且 Harness 允许向本地模型发送图片。</div>
         <div class="form-row"><label>API Key LLM_API_KEY</label><input name="LLM_API_KEY"></div>

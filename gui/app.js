@@ -298,6 +298,62 @@ async function restartService(svc) {
 }
 
 // ---------- 模型页 ----------
+// 4.4：router 模式（LLM_ROUTER=1）下，models 目录里的模型可以「热加载/卸载」，
+// 不用重启 llama-server。这里把每个模型当前的 loaded/loading/unloaded 状态列出来，
+// 点击「加载」/「卸载」即代理到 llama-server 的 /models/load|unload（异步，需轮询）。
+async function loadRouterBox() {
+  const box = $('#router-box')
+  if (!box) return
+  const routerOn = status?.config?.LLM_ROUTER === '1'
+  const llmRunning = status?.services?.llm?.running
+  if (!routerOn) { box.classList.add('hidden'); return }
+  box.classList.remove('hidden')
+  const models = status?.routerModels
+  if (!llmRunning) {
+    box.innerHTML = '<div class="router-row">router 模式已开启，但本地大模型未运行（启动后此处显示各模型加载状态）。</div>'
+    return
+  }
+  if (!models || models.length === 0) {
+    box.innerHTML = '<div class="router-row">router 已开启，但还没读到模型列表（llama-server 可能仍在启动）。</div>'
+    return
+  }
+  box.innerHTML = '<div class="router-row" style="color:var(--text)">router 多模型模式 —— 点「加载/卸载」即时切换（不用重启服务）：</div>'
+  for (const m of models) {
+    const row = document.createElement('div')
+    row.className = 'router-row'
+    const state = m.status === 'loaded' ? 'loaded' : (m.status === 'loading' ? 'loading' : 'unloaded')
+    const stateText = { loaded: '已加载', loading: '加载中…', unloaded: '未加载' }[state]
+    const act = state === 'unloaded' ? 'load' : (state === 'loaded' ? 'unload' : null)
+    row.innerHTML = `
+      <span class="router-state ${state}">${stateText}</span>
+      <span class="router-id">${esc(m.id)}</span>
+      ${act ? `<button class="btn btn-sm" data-act="${act}" data-id="${esc(m.id)}">${act === 'load' ? '加载' : '卸载'}</button>` : ''}`
+    if (act) {
+      row.querySelector('button').addEventListener('click', async e => {
+        const btn = e.target
+        btn.disabled = true
+        try {
+          const path = act === 'load' ? '/api/llm/router/load' : '/api/llm/router/unload'
+          await api('POST', path, { model: m.id })
+          // 异步：llama-server 立即返回，轮询状态直到 loaded/unloaded
+          for (let i = 0; i < 30; i++) {
+            await new Promise(r => setTimeout(r, 1000))
+            await refreshStatus()
+            const now = (status?.routerModels ?? []).find(x => x.id === m.id)
+            const done = (act === 'load' && now?.status === 'loaded') || (act === 'unload' && now?.status === 'unloaded')
+            if (done) break
+          }
+        } catch (err) {
+          notice(`router 操作失败：${err.message}`, true)
+        } finally {
+          await loadRouterBox()
+        }
+      })
+    }
+    box.appendChild(row)
+  }
+}
+
 async function loadInstalled() {
   try {
     const models = await api('GET', '/api/models')
@@ -316,10 +372,10 @@ async function loadInstalled() {
         <div class="model-meta">
           ${quant ? `<span class="quant-tag">${esc(quant)}</span>` : ''}
           <span>${fmtBytes(m.size)}</span>
-          ${m.active ? '<span class="active-tag">当前使用</span>' : ''}
+          ${m.ctx ? `<span class="ctx-tag">ctx ${m.ctx.toLocaleString()}</span>` : ''}
+          ${m.active ? '<span class="active-tag">当前配置</span>' : ''}
         </div>
         <div class="model-actions">
-          ${m.active ? '' : `<button class="btn btn-sm" data-act="switch" data-name="${esc(m.name)}">设为当前</button>`}
           <button class="btn btn-sm btn-danger-ghost" data-act="delete" data-name="${esc(m.name)}">删除</button>
         </div>`
       card.addEventListener('click', async e => {
@@ -327,11 +383,7 @@ async function loadInstalled() {
         if (!btn) return
         const name = btn.dataset.name
         try {
-          if (btn.dataset.act === 'switch') {
-            await api('POST', '/api/models/switch', { name })
-            await refreshStatus()
-            await loadInstalled()
-          } else if (btn.dataset.act === 'delete') {
+          if (btn.dataset.act === 'delete') {
             if (!confirm(`确认删除模型 ${name}？（不可恢复）`)) return
             await api('DELETE', `/api/models/${encodeURIComponent(name)}`)
             await refreshStatus()
@@ -346,6 +398,7 @@ async function loadInstalled() {
   } catch (error) {
     $('#installed-list').innerHTML = `<div class="notice error">${esc(error.message)}</div>`
   }
+  await loadRouterBox()
 }
 
 function renderPresets() {
@@ -749,6 +802,9 @@ async function loadSettings() {
     form.dataset.llmHintsBound = '1'
     form.querySelector('[name=LLM_CTX]')?.addEventListener('change', updateLlmHints)
     form.querySelector('[name=LLM_MAXTOKENS]')?.addEventListener('change', updateLlmHints)
+    // 4.4：KV 压缩 / router 切换会影响显存预估，同步刷新
+    form.querySelector('[name=LLM_KV_QUANT]')?.addEventListener('change', updateLlmHints)
+    form.querySelector('[name=LLM_ROUTER]')?.addEventListener('change', updateLlmHints)
   }
 }
 
@@ -806,6 +862,25 @@ function updateLlmHints() {
           ? `实际 <b>${fmtK(maxTok)}</b>（模型上限 ${fmtK(modelMax)}${(ctx != null && maxTok < modelMax) ? `，受上下文 ${fmtK(ctx)} 限制` : ''}）`
           : `实际 <b>${fmtK(maxTok)}</b>${(ctx != null && maxTok < cap) ? `（受上下文 ${fmtK(ctx)} 限制）` : ''}`)
       : ''
+  }
+  // 4.4：显存占用预估（模型 + 上下文 + 其他占用 = 合计 / 显卡）
+  // 注意 estimateVram() 的 modelMiB 里**含** overheadMiB，totalMiB = modelMiB + kvMiB；
+  // 这里必须把「其他占用」单列出来，否则显示的三项加起来对不上合计（曾漏）。
+  const vramHint = $('#vram-hint')
+  const ve = status?.vramEstimate
+  if (vramHint) {
+    if (ve && ve.totalVramMiB > 0) {
+      const gb = n => (n / 1024).toFixed(1)
+      const modelGiB = ve.modelMiB - ve.overheadMiB
+      const parts = [modelGiB > 0 ? `模型 <b>${gb(modelGiB)}GB</b>` : '模型 <b>未探测到</b>']
+      if (ve.kvMiB != null) parts.push(`上下文 <b>${gb(ve.kvMiB)}GB</b>（${fmtK(ve.ctx)}，KV ${esc(ve.kvQuant)}）`)
+      parts.push(`其他占用 <b>${gb(ve.overheadMiB)}GB</b>`)
+      const verdict = ve.fits
+        ? `，余 ${gb(ve.freeMiB)}GB ✓`
+        : '，<b style="color:var(--warn, #e8a33d)">超出显存，请降上下文或开 KV 压缩</b>'
+      vramHint.innerHTML = parts.join(' + ')
+        + ` = 合计 <b>${gb(ve.totalMiB)}GB</b> / 显卡 ${gb(ve.totalVramMiB)}GB` + verdict
+    } else vramHint.textContent = ''
   }
 }
 

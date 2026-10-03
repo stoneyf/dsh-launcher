@@ -524,6 +524,147 @@ step('⑬ restart-path start')
   ok(/__dshTokenGuard/.test(mainSrc), '令牌文件有自愈补写（避免删掉后永久 401）')
 }
 
+// ---------- 14. 4.4 新功能：KV 压缩 / MoE / router / 显存预估 ----------
+// 覆盖：纯函数（kvQuantFactor/estimateVram/isRouterMode/listGgufNames）+
+// /api/status 的 vramEstimate 与 router 标记 + router 代理路由 + startLlm 参数拼装。
+console.log('⑭ 4.4 新功能（KV 压缩 / MoE / router / 显存预估）')
+step('⑭ 4.4 features start')
+{
+  const core = await import(pathToFileURL(join(here, '..', 'server', 'core.mjs')).href)
+
+  // (a) kvQuantFactor：各量化的相对 f16 占用系数
+  // 先把 config 的 LLM_KV_QUANT 设为各值再读
+  await api('PUT', '/api/config', { LLM_KV_QUANT: '' })
+  ok(core.kvQuantFactor() === 1, 'KV 系数：不压缩 = 1（f16）')
+  await api('PUT', '/api/config', { LLM_KV_QUANT: 'q8_0' })
+  ok(core.kvQuantFactor() === 0.5, 'KV 系数：q8_0 = 0.5')
+  await api('PUT', '/api/config', { LLM_KV_QUANT: 'q4_0' })
+  ok(core.kvQuantFactor() === 0.25, 'KV 系数：q4_0 = 0.25')
+
+  // (b) estimateVram：返回完整结构，且数值自洽
+  const ve = core.estimateVram()
+  ok(typeof ve === 'object' && ve !== null, 'estimateVram 返回对象')
+  ok(typeof ve.modelMiB === 'number' && ve.modelMiB > 0, 'estimateVram 有模型体积（MiB）')
+  ok(typeof ve.totalVramMiB === 'number' && ve.totalVramMiB > 0, 'estimateVram 有显卡总显存（nvidia-smi）')
+  ok(typeof ve.ctx === 'number' && ve.ctx > 0, 'estimateVram 带上下文窗口')
+  ok(typeof ve.fits === 'boolean', 'estimateVram 给出 fits 判定')
+  ok(typeof ve.model === 'string' && ve.model.length > 0, 'estimateVram 给出目标模型路径')
+  // q8_0 下 totalMiB 应明显小于 f16（同 ctx 时 KV 减半）
+  await api('PUT', '/api/config', { LLM_KV_QUANT: 'q8_0' })
+  const ve8 = core.estimateVram()
+  await api('PUT', '/api/config', { LLM_KV_QUANT: '' })
+  const veF16 = core.estimateVram()
+  ok(ve8.totalMiB <= veF16.totalMiB, 'KV q8_0 的显存预估 ≤ f16（同上下文）')
+  ok(ve8.kvQuant === 'q8_0' && veF16.kvQuant === 'f16', 'estimateVram 回显当前 KV 量化')
+
+  // (c) isRouterMode + listGgufNames + resolveCtx 随配置变化
+  await api('PUT', '/api/config', { LLM_ROUTER: '0' })
+  ok(core.isRouterMode() === false, 'isRouterMode：LLM_ROUTER=0 → false')
+  await api('PUT', '/api/config', { LLM_ROUTER: '1' })
+  ok(core.isRouterMode() === true, 'isRouterMode：LLM_ROUTER=1 → true')
+  ok(Array.isArray(core.listGgufNames()), 'listGgufNames 返回数组（fixture 无 gguf 则为空）')
+  ok(typeof core.resolveCtx() === 'number' && core.resolveCtx() > 0, 'resolveCtx 随配置返回正数')
+
+  // (d) /api/status 携带 vramEstimate 与 router 标记
+  const st = await api('GET', '/api/status')
+  ok(st.data.vramEstimate && typeof st.data.vramEstimate.totalMiB === 'number', '/api/status 携带 vramEstimate')
+  ok(typeof st.data.services.llm.router === 'boolean', '/api/status 的 llm.router 是布尔')
+  ok(st.data.services.llm.router === true, 'router 模式下 llm.router=true')
+
+  // (e) router 代理路由：llama 未运行时 GET /models 应 200（models:null）而非 500
+  await api('PUT', '/api/config', { LLM_ROUTER: '1' })
+  const rm = await api('GET', '/api/llm/router/models')
+  ok(rm.status === 200 && rm.data && 'models' in rm.data, 'GET /api/llm/router/models 返回 { models }')
+  // load 在 llama 没跑时 → 502（llama-server 无响应），而不是 500/崩溃
+  const rl = await api('POST', '/api/llm/router/load', { model: 'x' })
+  ok(rl.status === 502 || rl.status === 200, 'POST /api/llm/router/load 有明确返回（llama 未跑时 502）')
+
+  // (f) startLlm 的参数拼装：KV/MoE/router 都写进 args（静态检查，避免误删）
+  const svcSrc = readFileSync(join(here, '..', 'server', 'services.mjs'), 'utf8')
+  const startBlock = svcSrc.slice(svcSrc.indexOf('export async function startLlm'))
+    .slice(0, svcSrc.slice(svcSrc.indexOf('export async function startLlm')).indexOf('export async function stopLlm'))
+  ok(/--models-dir/.test(startBlock), 'router 模式用 --models-dir（不指定单个 -m）')
+  ok(/-ctk.*kvq/.test(startBlock) && /-ctv/.test(startBlock) && /-fa/.test(startBlock), 'KV 压缩会同时带 -ctk/-ctv/-fa on')
+  ok(/-cmoe/.test(startBlock) && /-ncmoe/.test(startBlock), 'MoE 支持 -cmoe（全部）与 -ncmoe N（前 N 层）')
+
+  // (g) CONFIG_DEFAULTS 含新增键
+  ok('LLM_KV_QUANT' in core.CONFIG_DEFAULTS && 'LLM_CPU_MOE' in core.CONFIG_DEFAULTS
+    && 'LLM_ROUTER' in core.CONFIG_DEFAULTS && 'LLM_ROUTER_MAX' in core.CONFIG_DEFAULTS,
+    'CONFIG_DEFAULTS 含 KV/MoE/router 四个新键')
+
+  // (h) 前端接线：设置项 + 显存预估行 + router 状态条都必须挂上
+  const htmlSrc = readFileSync(join(here, '..', 'gui', 'index.html'), 'utf8')
+  const appSrc = readFileSync(join(here, '..', 'gui', 'app.js'), 'utf8')
+  ok(/name="LLM_KV_QUANT"/.test(htmlSrc) && /name="LLM_CPU_MOE"/.test(htmlSrc)
+    && /name="LLM_ROUTER"/.test(htmlSrc) && /name="LLM_ROUTER_MAX"/.test(htmlSrc),
+    '设置页有 KV/MoE/router 四个新设置项')
+  ok(/id="vram-hint"/.test(htmlSrc) && /id="router-box"/.test(htmlSrc),
+    'index.html 有 #vram-hint 与 #router-box 容器')
+  // 显存预估必须把「其他占用」单列：estimateVram 的 modelMiB 里含 overheadMiB，
+  // 若显示时只写「模型(已减开销) + 上下文」，三项加起来会对不上合计（曾踩）。
+  const vramBlock = appSrc.slice(appSrc.indexOf('#vram-hint'), appSrc.indexOf('#vram-hint') + 1400)
+  ok(/modelMiB - ve\.overheadMiB/.test(vramBlock) && /overheadMiB\)\}GB/.test(vramBlock),
+    '显存预估单列「其他占用」，三项相加 = 合计（不会对不上）')
+  ok(/loadRouterBox/.test(appSrc) && /api\/llm\/router\/(load|unload)/.test(appSrc),
+    'router 状态条能调 load/unload 接口')
+
+  // (i) A：声明给 Harness 的上下文必须 = 服务器**实际**用的值，不能是「按配置算出来的值」。
+  // 真实事故（2026-10-03）：配置算出 180224、服务器实际 114688，Harness 塞满 11 万 token 后
+  // 每个请求都被 llama-server 拒（exceeds the available context size），本地会话直接卡死。
+  const coreSrc = readFileSync(join(here, '..', 'server', 'core.mjs'), 'utf8')
+  const runFile = join(FIXTURE, 'logs', 'llm-run.json')
+  mkdirSync(join(FIXTURE, 'logs'), { recursive: true })
+  writeFileSync(runFile, JSON.stringify({ pid: process.pid, ctx: 12345, router: false, kvQuant: 'f16' }))
+  ok(core.runningLlmRun()?.ctx === 12345, '实际启动记录读得到（pid 还活着）')
+  ok(core.effectiveCtx() === 12345, '服务在跑 → 用实际上下文，不用配置值')
+  writeFileSync(runFile, JSON.stringify({ pid: 999999, ctx: 12345 }))
+  ok(core.runningLlmRun() === null, 'pid 已死的启动记录作废（不当成在跑）')
+  ok(core.effectiveCtx() === core.resolveCtx(), '没有运行记录 → 回落按配置计算')
+  ok(/const ctx = effectiveCtx\(\)/.test(coreSrc), 'syncSettings 走 effectiveCtx（不再直接 resolveCtx）')
+  ok(/writeLlmRun\(\{/.test(svcSrc), 'startLlm 落盘实际启动参数')
+  ok(/clearLlmRun\(\)/.test(svcSrc), '停止/退出时清掉运行记录')
+  writeFileSync(runFile, '')
+
+  // (j) B+C：router 模式逐模型算上下文 + preset.ini + autoload
+  // fixture 里放两个假 gguf（不同大小），验证逐模型上下文不同
+  const fModels = join(FIXTURE, 'models')
+  mkdirSync(fModels, { recursive: true })
+  const gguf1 = join(fModels, 'TestModel-A.gguf')
+  const gguf2 = join(fModels, 'TestModel-B.gguf')
+  if (!existsSync(gguf1)) { writeFileSync(gguf1, Buffer.alloc(10 * 1024 * 1024)) }  // 10MB
+  if (!existsSync(gguf2)) { writeFileSync(gguf2, Buffer.alloc(20 * 1024 * 1024)) }  // 20MB
+  const preset = core.buildLlmPreset()
+  ok(preset.file.endsWith('preset.ini'), 'preset.ini 生成在 models 目录')
+  ok(Array.isArray(preset.models) && preset.models.length >= 1, 'preset 含至少 1 个模型')
+  const presetTxt = readFileSync(preset.file, 'utf8')
+  ok(presetTxt.startsWith('[*]'), 'preset 以 [*] 默认节开头')
+  ok(presetTxt.includes('ctx-size = 0'), '[*] 默认 ctx=0（模型原生）')
+  for (const m of preset.models) {
+    ok(presetTxt.includes(`[${m.name}]`), `preset 有节 [${m.name}]`)
+    ok(presetTxt.includes(`ctx-size = ${m.ctx}`), `节 [${m.name}] 有 ctx-size = ${m.ctx}`)
+  }
+  // 每个模型都有自己的 ctx（逐模型算，不是全局统一——真实 gguf 下不同体积会算出不同值）
+  if (preset.models.length >= 2) {
+    ok(preset.models.every(m => Number.isInteger(m.ctx) && m.ctx >= 8192), '每个模型都有独立 ctx（逐模型而非全局统一）')
+  }
+  ok(/buildLlmPreset\(\)/.test(svcSrc), 'startLlm 调用 buildLlmPreset')
+  ok(/--models-preset/.test(svcSrc), 'startLlm 传 --models-preset')
+  ok(/--models-autoload/.test(svcSrc), 'startLlm 传 --models-autoload')
+  // syncSettings router 模式逐模型 contextWindow
+  ok(/ctxForModel\(p\)/.test(coreSrc), 'syncSettings router 模式用 ctxForModel 逐模型算')
+
+  // (k) D：Auto 兜底看门狗——本地模型挂掉 >30s 自动切会话到云端
+  ok(/startWatchdog/.test(svcSrc), 'services.mjs 有 startWatchdog')
+  ok(/stopWatchdog/.test(svcSrc), 'services.mjs 有 stopWatchdog')
+  ok(/setInterval\(/.test(svcSrc) && /10000\)/.test(svcSrc), '看门狗每 10 秒检查一次')
+  ok(/Date\.now\(\) - lastLocalDownAt < 30000/.test(svcSrc), '本地挂掉 >30s 才切')
+  const mainSrc = readFileSync(join(here, '..', 'server', 'main.mjs'), 'utf8')
+  ok(/services\.startWatchdog\(\)/.test(mainSrc), 'main.mjs 在服务启动时启动看门狗')
+
+  // 复位：router 关掉，避免影响后续
+  await api('PUT', '/api/config', { LLM_ROUTER: '0', LLM_KV_QUANT: '' })
+}
+
 console.log(`\n结果：${passed} 通过 / ${failed} 失败`)
 step(`RESULT ${passed} passed / ${failed} failed`)
 process.exit(failed === 0 ? 0 : 1)

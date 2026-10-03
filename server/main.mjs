@@ -22,6 +22,7 @@ import { spawn } from 'node:child_process'
 import {
   DIRS, ROOT, readConfig, writeConfig, ensureDirs, logPath, modelPath, syncSettings, tcpPortBusy,
   waitPortFree, sleep, LAUNCHER_VERSION, resolveCtx, resolveMaxTokens, probeModel, setAutoStart, isAutoStart,
+  estimateVram,
 } from './core.mjs'
 import * as services from './services.mjs'
 import * as gpu from './gpu.mjs'
@@ -107,7 +108,9 @@ function listModels() {
       .map(name => {
         let size = 0
         try { size = statSync(join(DIRS.models, name)).size } catch { /* 忽略 */ }
-        return { name, size, active: name.toLowerCase() === active }
+        let ctx = null
+        try { ctx = ctxForModel(join(DIRS.models, name)) } catch { /* 忽略 */ }
+        return { name, size, active: name.toLowerCase() === active, ctx }
       })
       .sort((a, b) => a.name.localeCompare(b.name))
   } catch { /* 目录不存在 */ }
@@ -190,12 +193,18 @@ route('GET', /^\/api\/status$/, async (req, res) => {
     modelMaxOutput: probe?.max_output ?? 32768,
     modelNativeContext: probe?.native_context ?? null,
   }
+  // 4.4：显存占用预估（模型 + KV 缓存 + 开销，启动前就知道够不够）
+  const vramEstimate = estimateVram()
+  // 4.4：router 模式下各模型状态（unloaded/loading/loaded）；非 router 模式为 null
+  const routerModels = await services.routerModels()
   sendJson(res, 200, {
     services: { llm: await services.llmStatus(), dsh: services.dshStatus() },
     restarting: services.restartStates(),
     gpu: await gpu.gpuInfo(),
     config: cfg,
     llm: llmResolved,
+    vramEstimate,
+    routerModels,
     models: listModels(),
     versions: { launcher: LAUNCHER_VERSION, ...versions.versionSummary() },
     ports: {
@@ -343,6 +352,28 @@ route('POST', /^\/api\/models\/import$/, async (req, res) => {
     copyFileSync(source, dest)
     sendJson(res, 200, { name, size: statSync(dest).size })
   } catch (error) { sendError(res, 400, error.message) }
+})
+
+// 4.4：router 多模型热切换（代理到 llama-server 的 /models 接口）。
+// 仅在 router 模式（LLM_ROUTER=1）且 llama 已启动时可用。
+route('GET', /^\/api\/llm\/router\/models$/, async (req, res) => {
+  try { sendJson(res, 200, { models: await services.routerModels() }) } catch (error) { sendError(res, 502, error.message) }
+})
+route('POST', /^\/api\/llm\/router\/load$/, async (req, res) => {
+  try {
+    const body = await readBody(req)
+    const r = await services.routerLoadModel(String(body.model ?? ''))
+    if (!r.ok) throw new Error(`加载失败（llama-server 返回 ${r.status}）：${JSON.stringify(r.body ?? null)}`)
+    sendJson(res, 200, r)
+  } catch (error) { sendError(res, 502, error.message) }
+})
+route('POST', /^\/api\/llm\/router\/unload$/, async (req, res) => {
+  try {
+    const body = await readBody(req)
+    const r = await services.routerUnloadModel(String(body.model ?? ''))
+    if (!r.ok) throw new Error(`卸载失败（llama-server 返回 ${r.status}）：${JSON.stringify(r.body ?? null)}`)
+    sendJson(res, 200, r)
+  } catch (error) { sendError(res, 502, error.message) }
 })
 
 route('GET', /^\/api\/hub\/search$/, async (req, res) => {
@@ -798,6 +829,8 @@ export function startServer({ port = 0, onRelaunch = null } = {}) {
         void consumeResumeIntent(restored)
         // 静默模式 = 开机/静默拉起：干净开机（无状态文件）时，按「开机自动启动服务」选项启动服务
         if (!restored && process.argv.includes('--silent')) void ensureAutoStartServices()
+        // D（4.5）：Auto 兜底看门狗——本地模型挂掉 >30s 时自动切会话到云端
+        services.startWatchdog()
       }, 1000)
       resolveServer({ server, port: server.address().port, token })
     })

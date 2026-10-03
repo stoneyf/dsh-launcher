@@ -15,6 +15,8 @@ import {
   DIRS, ROOT, readConfig, writePid, readPid, clearPid, logPath, logTail,
   nodeExe, llmBaseUrl, modelPath, modelId, mmprojPath, syncSettings, killProcessTree,
   tcpPortBusy, freePortAfter, sleep, portHolderPids, waitPortFree, resolveCtx,
+  isRouterMode, listGgufNames, writeLlmRun, clearLlmRun, runningLlmRun, buildLlmPreset,
+  readProfileEntry,
 } from './core.mjs'
 import { runChecks, preflight, disablePlugins, quarantineBrokenSessions } from './preflight.mjs'
 
@@ -136,17 +138,66 @@ export async function llmStatus() {
   // 但端口健康检查通过 → 同样视为运行中，避免状态页误报「未启动」而实际可用。
   if (!running && health) running = true
   const holder = running ? (pid ?? portHolderPids(Number(cfg.LLM_PORT))[0] ?? null) : null
+  // 服务在跑时，模型/上下文一律以**实际启动记录**为准（配置可能已改但没重启模型）。
+  // 4.4 之前这里读的是配置 → 状态页会显示一个根本没在跑的模型（2026-10-03 实际发生）。
+  const run = running ? runningLlmRun() : null
   return {
     running,
     pid: holder,
     host: cfg.LLM_HOST,
     port: Number(cfg.LLM_PORT),
-    model: modelId(),
-    modelFile: modelPath(),
+    model: run?.alias ?? modelId(),
+    modelFile: run?.modelPath ?? modelPath(),
     mmproj: mmprojPath(),
     endpoint: `${llmBaseUrl()}/v1`,
     health,
+    router: run?.router ?? isRouterMode(),
+    ctx: run?.ctx ?? null,      // 实际生效的上下文（null = 不是启动器起的，未知）
+    ctxPending: resolveCtx(),   // 按当前配置「将会」用的上下文（重启模型才生效）
   }
+}
+
+/** 4.4：向 llama-server（router 模式）转发 JSON 请求。
+ *  @returns {Promise<{status:number|null, body:any|null}>} 失败返回 status:null。 */
+async function llmHttpJson(path, method = 'GET', body = undefined) {
+  try {
+    const res = await fetch(`${llmBaseUrl()}${path}`, {
+      method,
+      headers: { 'Content-Type': 'application/json' },
+      body: body === undefined ? undefined : JSON.stringify(body),
+      signal: AbortSignal.timeout(8000),
+    })
+    const text = await res.text()
+    let json = null
+    try { json = text ? JSON.parse(text) : null } catch { json = text || null }
+    return { status: res.status, body: json }
+  } catch { return { status: null, body: null } }
+}
+
+/** 4.4：查询 llama-server 里各模型的状态（unloaded/loading/loaded）。
+ *  llama.cpp 的 GET /models 返回 { models: [{ id, loaded, ... }] }；解析失败返回 null。 */
+export async function routerModels() {
+  if (!isRouterMode()) return null
+  const r = await llmHttpJson('/models')
+  if (r.status !== 200 || r.body == null) return null
+  const raw = Array.isArray(r.body) ? r.body : (Array.isArray(r.body.models) ? r.body.models : null)
+  if (!raw) return null
+  return raw.map(m => ({
+    id: m.id ?? m.model ?? m.name ?? '',
+    loaded: Boolean(m.loaded ?? m.status === 'loaded'),
+    loading: Boolean(m.loading ?? m.status === 'loading'),
+    status: m.status ?? (m.loaded ? 'loaded' : m.loading ? 'loading' : 'unloaded'),
+  }))
+}
+
+/** 4.4：加载/卸载某个模型（异步，llama-server 立即返回，需轮询状态）。 */
+export async function routerLoadModel(id) {
+  const r = await llmHttpJson('/models/load', 'POST', { model: id })
+  return { ok: r.status === 200 || r.status === 202, status: r.status, body: r.body }
+}
+export async function routerUnloadModel(id) {
+  const r = await llmHttpJson('/models/unload', 'POST', { model: id })
+  return { ok: r.status === 200 || r.status === 202, status: r.status, body: r.body }
 }
 
 export function dshStatus() {
@@ -171,7 +222,14 @@ export async function startLlm() {
   const exe = join(DIRS.llm, 'llama-server.exe')
   if (!existsSync(exe)) throw new Error(`llama-server.exe 不存在（${exe}）。请先运行 setup.bat。`)
   const model = modelPath()
-  if (!existsSync(model)) throw new Error(`模型文件不存在（${model}）。请在启动器模型管理中下载。`)
+  const router = isRouterMode()
+  if (router) {
+    // router 模式不指定单个模型文件，改为交给 llama-server 扫描整个 models 目录。
+    const names = listGgufNames()
+    if (names.length === 0) throw new Error(`models 目录里没有 .gguf 模型文件（${DIRS.models}）。请先在模型页下载或导入。`)
+  } else if (!existsSync(model)) {
+    throw new Error(`模型文件不存在（${model}）。请在启动器模型管理中下载。`)
+  }
   const mmproj = mmprojPath()
   if (mmproj && !existsSync(mmproj)) throw new Error(`视觉投影器文件不存在（${mmproj}）。请先下载 mmproj 文件，或清空 LLM_MMPROJ。`)
   if (await tcpPortBusy(cfg.LLM_HOST, Number(cfg.LLM_PORT))) {
@@ -183,16 +241,38 @@ export async function startLlm() {
     throw new Error(`端口 ${cfg.LLM_PORT} 已被占用。请修改 config\\launcher.env 的 LLM_PORT。`)
   }
   syncSettings()
-  const args = [
-    '-m', model,
-    '--alias', modelId(),
+  const args = []
+  if (router) {
+    // 4.4：多模型模式。--models-dir 让 llama-server 自己发现目录里的 gguf，
+    // 按需加载、LRU 淘汰，可以用 /models/load 热切换，不用重启服务。
+    // 4.5（B+C）：--models-preset 让每个模型各拿各的上下文（按模型体积+显存+KV压缩逐模型算）；
+    // --models-autoload 让 dsh 下拉框选谁就加载谁，不用手动点 load。
+    const maxResident = Number(cfg.LLM_ROUTER_MAX) > 0 ? Number(cfg.LLM_ROUTER_MAX) : 1
+    const preset = buildLlmPreset()
+    args.push('--models-dir', DIRS.models, '--models-max', String(maxResident))
+    args.push('--models-preset', preset.file)
+    args.push('--models-autoload')
+  } else {
+    args.push('-m', model, '--alias', modelId())
+  }
+  // 上下文只算一次：既用于 -c，也写进 logs\llm-run.json（供 syncSettings 向 Harness 声明）。
+  const ctx = resolveCtx()
+  args.push(
     '--host', cfg.LLM_HOST,
     '--port', String(cfg.LLM_PORT),
-    '--ctx-size', String(resolveCtx()),
+    // router 模式尤其要注意：不显式给 -c 会用模型原生上限（本机 262144），KV 直接吃满显存。
+    '--ctx-size', String(ctx),
     '--n-gpu-layers', String(cfg.LLM_NGPU),
     '--parallel', String(cfg.LLM_PARALLEL),
     '--jinja',
-  ]
+  )
+  // 4.4：KV 缓存量化。llama.cpp 要求 KV 量化必须配合 Flash Attention，这里自动补上 -fa on。
+  const kvq = String(cfg.LLM_KV_QUANT ?? '').trim()
+  if (kvq) args.push('-ctk', kvq, '-ctv', kvq, '-fa', 'on')
+  // 4.4：MoE 专家层放内存（为将来的 MoE 模型预留）。
+  const moe = String(cfg.LLM_CPU_MOE ?? '').trim().toLowerCase()
+  if (moe === 'all') args.push('-cmoe')
+  else if (/^\d+$/.test(moe) && Number(moe) > 0) args.push('-ncmoe', moe)
   // 额外参数（config\launcher.env 的 LLM_EXTRA_ARGS，空格分隔）。
   // 用于关掉推理模型的思考链等：见 core.mjs CONFIG_DEFAULTS 里的说明。
   const extraArgs = String(cfg.LLM_EXTRA_ARGS ?? '').trim()
@@ -209,9 +289,21 @@ export async function startLlm() {
   proc.on('exit', () => {
     state.llm = null
     clearPid('llm')
+    clearLlmRun()
   })
   state.llm = { running: true, proc }
   writePid('llm', proc.pid)
+  // A（4.5）：记录**实际**启动参数。syncSettings 与状态页据此声明上下文，
+  // 避免「配置改了但模型没重启」时向 Harness 声明一个服务器给不了的窗口（会直接把本地会话卡死）。
+  writeLlmRun({
+    pid: proc.pid,
+    ctx,
+    alias: router ? null : modelId(),
+    modelPath: router ? null : model,
+    router,
+    kvQuant: String(cfg.LLM_KV_QUANT ?? '').trim() || 'f16',
+    startedAt: new Date().toISOString(),
+  })
   try {
     await waitLlmReady(900)
   } catch (error) {
@@ -230,6 +322,7 @@ export async function stopLlm() {
   await killPortHolders(Number(cfg.LLM_PORT), pid).catch(() => 0)
   state.llm = null
   clearPid('llm')
+  clearLlmRun()
 }
 
 /**
@@ -630,4 +723,57 @@ export async function startAll() {
 export async function stopAll() {
   await stopDsh()
   await stopLlm()
+}
+
+/** D（4.5）：Auto 兜底看门狗。
+ *  每 10 秒检查：如果 Auto 模式（local + cloud）且 the local model's health endpoint is down
+ *  for >30s, 自动 switch the session to cloud so unattended tasks don't stall.
+ *  Only fires when the session is actually on a local-llama model (checked via the
+ *  profile's agent-default-model entry).
+ */
+let watchdogTimer = null
+let lastLocalDownAt = null
+
+export function startWatchdog() {
+  if (watchdogTimer) return
+  watchdogTimer = setInterval(async () => {
+    try {
+      const cfg = readConfig()
+      if (!isRouterMode() && !readPid('llm')) return  // not running
+      const cfg2 = readConfig()
+      const llmUrl = `${llmBaseUrl()}/health`
+      let up = false
+      try {
+        const r = await fetch(llmUrl, { signal: AbortSignal.timeout(3000) })
+        up = r.ok
+      } catch { up = false }
+      if (up) { lastLocalDownAt = null; return }
+      // Local is down
+      if (!lastLocalDownAt) lastLocalDownAt = Date.now()
+      if (Date.now() - lastLocalDownAt < 30000) return  // wait 30s before switching
+      // Check if the session is on a local-llama model
+      const entry = readProfileEntry('agent-default-model')
+      if (!entry?.config?.provider || entry.config.provider !== 'local-llama') return
+      // Switch to cloud
+      const patchFile = join(DIRS.data, 'profiles', 'web', 'cordis.patch.yml')
+      if (existsSync(patchFile)) {
+        const content = readFileSync(patchFile, 'utf8')
+        const newContent = content.replace(
+          /(- id: agent-default-model[\s\S]*?provider: local-llama[\s\S]*?model: [^\n]+)/,
+          (m, p1) => p1.replace('local-llama', 'deepseek').replace(/model: [^\n]+/, 'model: deepseek-flash')
+        )
+        if (newContent !== content) {
+          writeFileSync(patchFile, newContent, 'utf8')
+          console.error('[watchdog] local model down >30s, switched session to cloud (deepseek-flash)')
+        }
+      }
+      lastLocalDownAt = null  // reset to avoid re-firing every tick
+    } catch { /* ignore */ }
+  }, 10000)
+  watchdogTimer.unref()  // don't keep the process alive
+}
+
+export function stopWatchdog() {
+  if (watchdogTimer) { clearInterval(watchdogTimer); watchdogTimer = null }
+  lastLocalDownAt = null
 }

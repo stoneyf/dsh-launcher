@@ -12,7 +12,7 @@ import { spawnSync } from 'node:child_process'
 import { createRequire } from 'node:module'
 import net from 'node:net'
 
-export const LAUNCHER_VERSION = '4.2.2'
+export const LAUNCHER_VERSION = '4.4.1'
 
 const serverDir = dirname(fileURLToPath(import.meta.url))
 /** 根目录：默认取 server 上一级；DSH_LAUNCHER_ROOT 可覆盖（与传给 dsh 进程的同名变量一致，便于测试与外部发现）。 */
@@ -59,6 +59,19 @@ export const CONFIG_DEFAULTS = {
   LLM_MAXTOKENS: 'auto',
   LLM_NGPU: '999',
   LLM_PARALLEL: '1',
+  // 4.4：KV 缓存量化。'' = 不压缩（f16）| q8_0 | q5_0 | q4_0。
+  // llama.cpp 要求 KV 量化必须同时开 Flash Attention，startLlm 会自动补 -fa on。
+  // 实测（Q6_K + -c 114688）：f16 占用 29647 MiB，q8_0 只要 26678 MiB（省 2.9GB），
+  // 加载 18s → 12.1s。省下的显存由 resolveCtx() 自动换成更大的上下文。
+  LLM_KV_QUANT: '',
+  // 4.4：MoE 专家层放内存（--cpu-moe / -n-cpu-moe）。'' = 不启用 | all | 数字 N（前 N 层）。
+  // 给将来的 MoE 模型（如 Qwen3.8-35B-A3B）预留：权重放内存可给显存腾地方。
+  LLM_CPU_MOE: '',
+  // 4.4：多模型 router 模式。'1' = 用 --models-dir 指向 models 目录，
+  // llama-server 按需加载、热切换（不用重启服务）；'0' = 单模型（-m 指定一个文件）。
+  LLM_ROUTER: '0',
+  // router 模式同时驻留的模型数上限。本机 32GB 显存一次只装得下一个 27B，故默认 1。
+  LLM_ROUTER_MAX: '1',
   // 追加给 llama-server 的额外命令行参数（空格分隔）。默认关掉思考链：
   // 本机模型是推理模型，chat template 默认保留 reasoning，每轮回复都带
   // reasoning_content 字段；DSH 端 llm-deepseek 按 thinking: disabled 构造
@@ -218,22 +231,57 @@ export function replaceYamlSection(content, sectionName, replacement) {
   return out.join('\r\n')
 }
 
-/** 探测模型 gguf：原生上下文 + 每 token KV 缓存字节数。按模型路径缓存；python/gguf 缺失返回 null。 */
-let _probeCache = null  // { path, result }
-export function probeModel() {
-  const model = modelPath()
-  if (_probeCache && _probeCache.path === model) return _probeCache.result
+/** 探测模型 gguf：原生上下文 + 每 token KV 缓存字节数。按模型路径缓存；python/gguf 缺失返回 null。
+ *  @param {string} [modelArg] 要探测的 gguf 路径；缺省 = 当前 LLM_MODEL。
+ *  4.4：router 模式要逐个模型探测（每个模型的 kv_per_token / max_output 不同），故支持传路径。 */
+const _probeCache = new Map()  // path -> result
+export function probeModel(modelArg) {
+  const model = modelArg || modelPath()
+  if (_probeCache.has(model)) return _probeCache.get(model)
   const py = join(serverDir, 'probe_model.py')
+  let result = null
   if (existsSync(py) && existsSync(model)) {
     try {
       const r = run('python', [py, model])
       if (r.ok) {
         const line = String(r.stdout).trim().split('\n').pop()
-        if (line && line.startsWith('{')) _probeCache = { path: model, result: JSON.parse(line) }
+        if (line && line.startsWith('{')) result = JSON.parse(line)
       }
     } catch { /* 兜底：走固定上下文 */ }
   }
-  return _probeCache ? _probeCache.result : null
+  _probeCache.set(model, result)
+  return result
+}
+
+/** models 目录下的所有 gguf 文件名（已排序）。目录不存在返回空数组。 */
+export function listGgufNames() {
+  try {
+    return readdirSync(DIRS.models).filter(n => /\.gguf$/i.test(n)).sort((a, b) => a.localeCompare(b))
+  } catch { return [] }
+}
+
+/** 是否处于多模型 router 模式（LLM_ROUTER=1）。 */
+export function isRouterMode() {
+  return String(readConfig().LLM_ROUTER ?? '').trim() === '1'
+}
+
+/** KV 缓存量化相对 f16 的占用系数（4.4）。q8_0 = 8bit/16bit = 0.5，依此类推。 */
+export function kvQuantFactor() {
+  const q = String(readConfig().LLM_KV_QUANT ?? '').trim().toLowerCase()
+  if (q === 'q8_0') return 0.5
+  if (q === 'q5_1' || q === 'q5_0') return 0.3125
+  if (q === 'q4_1' || q === 'q4_0') return 0.25
+  return 1  // '' / f16 / 未知值
+}
+
+/** 显存与上下文估算所针对的模型文件。
+ *  单模型模式 = LLM_MODEL；router 模式 = LLM_MODEL（若该文件确实存在），否则目录里第一个 gguf。 */
+export function vramTargetModelPath() {
+  const configured = modelPath()
+  if (!isRouterMode()) return configured
+  if (existsSync(configured)) return configured
+  const names = listGgufNames()
+  return names.length > 0 ? join(DIRS.models, names[0]) : configured
 }
 
 /** GPU 总显存（MiB）；nvidia-smi 缺失/失败返回 0。 */
@@ -245,26 +293,101 @@ export function getTotalVramMiB() {
   } catch { return 0 }
 }
 
-/** 解析上下文窗口：LLM_CTX=auto 时按显存自动计算（取能容纳的最大 16K 整数倍），否则用固定值。 */
+/** 解析上下文窗口：LLM_CTX=auto 时按显存自动计算（取能容纳的最大 16K 整数倍），否则用固定值。
+ *  4.4：KV 缓存量化（LLM_KV_QUANT）后每 token 的 KV 占用按系数下降，
+ *  这里同步折算——否则「省下来的显存白省」，auto 算出的上下文不会变大。 */
 export function resolveCtx() {
   const cfg = readConfig()
   const raw = String(cfg.LLM_CTX ?? '').trim().toLowerCase()
   if (raw !== 'auto') return Number(cfg.LLM_CTX) || 32768
-  const probe = probeModel()
+  const target = vramTargetModelPath()
+  const probe = probeModel(target)
   const totalVram = getTotalVramMiB()
-  const model = modelPath()
-  const modelBytes = existsSync(model) ? statSync(model).size : 0
+  const modelBytes = existsSync(target) ? statSync(target).size : 0
   if (!probe?.kv_per_token || !totalVram || !modelBytes) return 131072  // 兜底：探测不到用 128K
   const overheadMiB = 1536   // CUDA 上下文 + embedding + 杂项开销
   const safetyMiB = 1024     // 额外预留余量
   const modelVramMiB = modelBytes / 1048576 + overheadMiB
   const kvBudgetMiB = totalVram - modelVramMiB - safetyMiB
   if (kvBudgetMiB <= 0) return 8192
-  let ctx = Math.floor(kvBudgetMiB * 1048576 / probe.kv_per_token)
+  const kvPerToken = probe.kv_per_token * kvQuantFactor()
+  let ctx = Math.floor(kvBudgetMiB * 1048576 / kvPerToken)
   if (probe.native_context) ctx = Math.min(ctx, probe.native_context)  // 不超过模型原生上限
   ctx = Math.floor(ctx / 16384) * 16384   // 向下取整到 16K 整数倍
   ctx = Math.max(ctx, 8192)               // 下限保护
   return ctx
+}
+
+/** 单模型自动上下文（B，4.5）：给定 gguf 路径，按「模型体积 + 剩余显存 + KV 压缩」算最大可容纳上下文。
+ *  与 resolveCtx 同公式，但作用于任意模型文件（供 router 模式逐模型写 preset.ini）。
+ *  @param {string} modelPath  gguf 文件绝对路径
+ *  @returns {number} 上下文长度（16K 倍数，下限 8192，上限模型原生） */
+export function ctxForModel(modelPath) {
+  const probe = probeModel(modelPath)
+  const totalVram = getTotalVramMiB()
+  const modelBytes = existsSync(modelPath) ? statSync(modelPath).size : 0
+  if (!probe?.kv_per_token || !totalVram || !modelBytes) return 131072  // 兜底
+  const overheadMiB = 1536
+  const safetyMiB = 1024
+  const modelVramMiB = modelBytes / 1048576 + overheadMiB
+  const kvBudgetMiB = totalVram - modelVramMiB - safetyMiB
+  if (kvBudgetMiB <= 0) return 8192
+  const kvPerToken = probe.kv_per_token * kvQuantFactor()
+  let ctx = Math.floor(kvBudgetMiB * 1048576 / kvPerToken)
+  if (probe.native_context) ctx = Math.min(ctx, probe.native_context)
+  ctx = Math.floor(ctx / 16384) * 16384
+  return Math.max(ctx, 8192)
+}
+
+/** 生成 llama.cpp INI preset 文件（B，4.5）：router 模式下每个模型各拿各的上下文。
+ *  节名 = 文件名去 .gguf 后缀（llama.cpp 的 --alias 与此一致，实测确认）。
+ *  写法：`[*]` 默认 ctx=0（模型原生），逐模型节覆盖 ctx-size。
+ *  **必须无 BOM**（BOM 导致 llama.cpp 解析失败，实测）。
+ *  @returns {{file:string, models:Array<{name:string, ctx:number}>}} */
+export function buildLlmPreset() {
+  const models = listGgufNames().map(name => ({
+    name: name.replace(/\.gguf$/i, ''),
+    ctx: ctxForModel(join(DIRS.models, name)),
+  }))
+  const lines = ['[*]', 'ctx-size = 0']
+  for (const m of models) {
+    lines.push('', `[${m.name}]`, `ctx-size = ${m.ctx}`)
+  }
+  const file = join(DIRS.models, 'preset.ini')
+  writeFileSync(file, lines.join('\n') + '\n', { encoding: 'utf8' })
+  return { file, models }
+}
+
+/** 显存占用预估（4.4）：把「模型 + KV 缓存 + 开销」拆开显示，启动前就知道够不够。
+ *  @returns {{model:string, modelMiB:number, kvMiB:number|null, overheadMiB:number,
+ *             totalMiB:number, totalVramMiB:number, freeMiB:number|null, ctx:number,
+ *             kvQuant:string, router:boolean, fits:boolean|null}} */
+export function estimateVram() {
+  const cfg = readConfig()
+  const model = vramTargetModelPath()
+  const probe = probeModel(model)
+  const ctx = resolveCtx()
+  const totalVramMiB = getTotalVramMiB()
+  const overheadMiB = 1536
+  const modelBytes = existsSync(model) ? statSync(model).size : 0
+  const modelMiB = Math.round(modelBytes / 1048576) + overheadMiB
+  const kvMiB = probe?.kv_per_token
+    ? Math.round(ctx * probe.kv_per_token * kvQuantFactor() / 1048576)
+    : null
+  const totalMiB = modelMiB + (kvMiB ?? 0)
+  return {
+    model,
+    modelMiB,
+    kvMiB,
+    overheadMiB,
+    totalMiB,
+    totalVramMiB,
+    freeMiB: totalVramMiB ? totalVramMiB - totalMiB : null,
+    ctx,
+    kvQuant: String(cfg.LLM_KV_QUANT ?? '').trim() || 'f16',
+    router: isRouterMode(),
+    fits: totalVramMiB ? totalMiB <= totalVramMiB : null,
+  }
 }
 
 /** 解析最大输出 token：LLM_MAXTOKENS=auto 时用模型自身上限（探测，缺省 32K），否则用固定值；最终都不超过上下文窗口。 */
@@ -303,53 +426,53 @@ export function readProfileEntry(id) {
   return target
 }
 
-/** 移除 profile patch 中已废弃的条目（4.2.2 前本地模型误配在 llm-deepseek）。 */
-export function removeProfileEntry(id) {
-  const file = profilePatchFile()
-  if (yaml === null || !existsSync(file)) return { ok: false, reason: 'skipped' }
-  let doc
-  try {
-    doc = yaml.load(readFileSync(file, 'utf8'))
-  } catch {
-    return { ok: false, reason: 'parse-failed' }
-  }
-  if (!Array.isArray(doc)) return { ok: false, reason: 'not-a-list' }
-  const before = doc.length
-  doc = doc.filter((row) => !(row && typeof row === 'object' && row.id === id))
-  if (doc.length === before) return { ok: true, removed: 0 }
-  const text = yaml.dump(doc, { lineWidth: -1, noRefs: true, quotingType: '"' })
-  const round = yaml.load(text)
-  if (!Array.isArray(round) || round.length !== doc.length) return { ok: false, reason: 'verify-failed' }
-  writeFileSync(file, text, 'utf8')
-  return { ok: true, removed: before - doc.length }
-}
-
 export function syncSettings() {
   const cfg = readConfig()
   const id = modelId()
   const llmPort = Number(cfg.LLM_PORT)
-  const ctx = resolveCtx()
+  // A（4.5）：用**实际生效**的上下文，而不是「按当前配置算出来的值」。
+  // 服务在跑时两者可能不同（改了配置没重启模型）——那时声明配置值会让 Harness 超出服务器能力。
+  const ctx = effectiveCtx()
   const maxTok = resolveMaxTokens(ctx)
-  // 4.2.2: remove legacy llm-deepseek provider (local model now uses openai-completions under llm-pi-ai).
-  removeProfileEntry('llm-deepseek')
   // 配置了视觉投影器（LLM_MMPROJ）时声明图像输入能力，DSH 才会放行图片内容。
   const vision = mmprojPath() !== null
   // llama-server 说的是标准 OpenAI 协议，必须挂在 openai-completions 适配器下。
   // 4.2.2 之前本地模型误配在 llm-deepseek（DeepSeek 私有 Messages 协议）上，
   // 简单回复碰巧能过、但工具调用参数解析一碰就报 "DeepSeek Messages expected a JSON object"。
   // 现改走 llm-pi-ai 路由下的 local-llama（openai-completions），云端 deepseek 路由不动。
-  const localLlama = {
-    api: 'openai-completions',
-    baseURL: `http://${cfg.LLM_HOST}:${llmPort}/v1`,
-    apiKeyEnv: 'LLM_API_KEY',
-    models: [
+  // 4.4：router 模式一次把 models 目录里所有 gguf 都声明给 Harness（配合 --models-dir 热切换）；
+  // 单模型模式仍只声明当前 LLM_MODEL 这一个。
+  const router = isRouterMode()
+  let models
+  if (router) {
+    // B（4.5）：router 模式下逐模型算上下文（不同体积的模型各拿各的），
+    // 与 preset.ini 里的 ctx-size 保持一致。
+    models = listGgufNames().map(name => {
+      const p = join(DIRS.models, name)
+      const mCtx = ctxForModel(p)
+      const pMax = probeModel(p)?.max_output ?? 32768
+      return {
+        id: name.replace(/\.gguf$/i, ''),
+        contextWindow: mCtx,
+        maxTokens: Math.min(pMax, mCtx),
+        ...(vision ? { inputModalities: ['text', 'image'] } : {}),
+      }
+    })
+  } else {
+    models = [
       {
         id,
         contextWindow: ctx,
         maxTokens: maxTok,
         ...(vision ? { inputModalities: ['text', 'image'] } : {}),
       },
-    ],
+    ]
+  }
+  const localLlama = {
+    api: 'openai-completions',
+    baseURL: `http://${cfg.LLM_HOST}:${llmPort}/v1`,
+    apiKeyEnv: 'LLM_API_KEY',
+    models,
   }
   // 只更新 local-llama 这一个 provider，云端 deepseek（DEEPSEEK_API_KEY）保持不动。
   // patchProfileEntries 是整段覆盖语义，所以先把现有 providers 读出来再合回去。
@@ -358,7 +481,10 @@ export function syncSettings() {
   if (existing?.config?.providers && typeof existing.config.providers === 'object') {
     piConfig.providers = { ...existing.config.providers, 'local-llama': localLlama }
   }
-  const selConfig = { provider: 'local-llama', model: id }
+  // 默认模型：单模型模式 = 当前文件；router 模式优先用它对应的那个，
+  // 不在目录里时退回列表第一个（否则 Harness 会指向一个不存在的模型名）。
+  const defaultId = router && !models.some(m => m.id === id) ? (models[0]?.id ?? id) : id
+  const selConfig = { provider: 'local-llama', model: defaultId }
   patchProfileEntries([
     { id: 'llm-pi-ai', name: '@deepseek-ai/dsh-llm-pi-ai', config: piConfig },
     { id: 'agent-default-model', name: '@deepseek-ai/dsh-agent-default-model', config: selConfig },
@@ -396,10 +522,17 @@ export function patchProfileEntries(entries) {
     return { ok: false, reason: 'not-a-list' }
   }
   for (const entry of entries) {
-    // Upsert by id: remove all existing rows with same id, then append.
-    // Last-wins semantics preserved; cleans historical duplicates on each sync.
-    doc = doc.filter((row) => !(row && typeof row === 'object' && row.id === entry.id))
-    doc.push({ id: entry.id, ...(entry.name ? { name: entry.name } : {}), config: entry.config })
+    // 同 id 可能有多条（历史遗留），Last-wins 语义：只改最后一条，其余原样保留。
+    let target = null
+    for (const row of doc) {
+      if (row && typeof row === 'object' && row.id === entry.id) target = row
+    }
+    if (target === null) {
+      doc.push({ id: entry.id, ...(entry.name ? { name: entry.name } : {}), config: entry.config })
+    } else {
+      target.config = entry.config
+      if (entry.name && target.name === undefined) target.name = entry.name
+    }
   }
   const text = yaml.dump(doc, { lineWidth: -1, noRefs: true, quotingType: '"' })
   // 自校验：dump 出来的东西必须还能解析回等价结构，否则宁可不写。
@@ -447,6 +580,43 @@ export function writePid(name, pid) {
 
 export function clearPid(name) {
   try { writeFileSync(pidFile(name), '', 'ascii') } catch { /* ignore */ }
+}
+
+/** 进程是否还活着（services.mjs 里有一份同名私有函数；core 不依赖 services，故各持一份）。 */
+function pidAlive(pid) {
+  if (!pid) return false
+  try { process.kill(pid, 0); return true } catch { return false }
+}
+
+/** 本次「实际」启动 llama-server 用的参数（services.mjs 在 spawn 后写 logs\llm-run.json）。
+ *  为什么要落盘：配置改了但模型没重启时，配置值 ≠ 服务器实际值。
+ *  向 Harness 声明上下文必须用**实际值**——否则 Harness 会往一个服务器给不了的窗口里塞内容，
+ *  每个请求都被 llama-server 以 `exceeds the available context size` 拒掉。
+ *  （2026-10-03 实际事故：向 Harness 声明 180224、服务器实际 114688 → 本地会话直接卡死。） */
+export function runningLlmRun() {
+  try {
+    const rec = JSON.parse(readFileSync(join(DIRS.logs, 'llm-run.json'), 'utf8'))
+    return rec && pidAlive(rec.pid) ? rec : null
+  } catch { return null }
+}
+
+export function writeLlmRun(rec) {
+  try {
+    mkdirSync(DIRS.logs, { recursive: true })
+    writeFileSync(join(DIRS.logs, 'llm-run.json'), JSON.stringify(rec), 'utf8')
+  } catch { /* 落盘失败不影响启动 */ }
+}
+
+export function clearLlmRun() {
+  try { writeFileSync(join(DIRS.logs, 'llm-run.json'), '', 'utf8') } catch { /* ignore */ }
+}
+
+/** 实际生效的上下文：服务在跑 → 用它启动时真正带上的值；没跑 → 按配置 + 显存算。
+ *  原则（用户 2026-10-03 拍板）：「按准确的来」——唯一真相是实际运行的东西，
+ *  绝不向 Harness 声明一个服务器给不了的窗口。 */
+export function effectiveCtx() {
+  const ctx = Number(runningLlmRun()?.ctx)
+  return Number.isInteger(ctx) && ctx > 0 ? ctx : resolveCtx()
 }
 
 export function logPath(name) {

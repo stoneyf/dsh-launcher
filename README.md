@@ -4,6 +4,23 @@
 
 ## 更新日志
 
+### 4.4.1
+- **上下文不再谎报（A）**：`syncSettings()` 现在按**服务器实际用的上下文**向 Harness 声明，而不是「按当前配置算出来的值」。`startLlm` 在 spawn 后把实际启动参数（pid/ctx/kvQuant/alias）写入 `logs\llm-run.json`；`syncSettings` 改走 `effectiveCtx()`（服务在跑→读实际值，没跑→按配置算）。修复「改了配置没重启模型→声明 180224 实际 114688→每个请求都被拒」的事故。
+- **逐模型自动上下文（B）**：`ctxForModel(path)` 按「模型体积 + 剩余显存 + KV 压缩」逐模型算最大可容纳上下文（与 `resolveCtx` 同公式，作用于任意 gguf 文件）。`buildLlmPreset()` 生成 `models\preset.ini`（`[*]` 默认 + 逐模型节），`startLlm` 在 router 模式传 `--models-preset` + `--models-autoload`——**不同体积的模型各拿各的上下文**，dsh 下拉框选谁加载谁。
+- **router 模式默认 autoload（C）**：`startLlm` router 分支加 `--models-autoload`，对话里选模型即自动加载，不用手动点。
+- 自测从 111 项增加到 **131 项**（+7 A + 13 B+C），全绿。
+- **注意**：preset.ini 必须无 BOM（BOM 导致 llama.cpp 解析失败，实测）；节名 = 文件名去 `.gguf` 后缀（与 `--alias` 一致）。
+
+### 4.4.0
+- **本地模型显存优化与多模型热切换**（结合本机 RTX 5090 32GB 实测数据开发）：
+  - **KV 缓存压缩开关（`LLM_KV_QUANT`）**：新增设置项，可选 `q8_0`/`q5_0`/`q4_0`。压缩 KV 缓存省下的显存，`auto` 上下文会**自动**换成更大的窗口（否则省下的白省）。实测 Q6_K 开 `q8_0` 后占用从 29.6GB 降到 26.7GB（省 2.9GB），加载 18s→12s，速度几乎无感。开压缩时自动补 `--flash-attn on`（llama.cpp 要求）。
+  - **显存占用预估显示**：设置页「上下文长度」下方新增一行，实时显示「模型 X GB + 上下文 Y GB + 其他占用 Z GB = 合计 / 显卡 32 GB」，并判定够不够、还剩多少——**启动前就知道会不会爆显存**，不再点了启动才发现。三项能逐项加起来对上合计（`estimateVram()` 的 `modelMiB` 里含 1.5GB 运行开销，显示时单列出来）。
+  - **MoE 专家层放内存（`LLM_CPU_MOE`）**：新增设置项，`all`/前 N 层。为将来的 MoE 模型（如 Qwen3.8-35B-A3B）预留：把部分专家权重放内存、给显存腾地方。密集模型不用设。
+  - **多模型 router 热切换（`LLM_ROUTER`）**：开启后 llama-server 用 `--models-dir` 指向 models 目录、按需加载/热切换（不再重启服务）。模型页新增 router 状态条，显示每个模型 `已加载/加载中/未加载`，点「加载/卸载」即时切换（实测 8~18 秒）。新增接口 `GET /api/llm/router/models`、`POST /api/llm/router/load|unload`。router 模式同步时把目录里**所有** gguf 都声明给 Harness（每个模型独立上下文/最大输出）。
+- **基线**：当前生产 4.2.2（用户拍板不用 launcher-dev、不碰 4.3.x 的 dsh-brain/任务看板）。版本号取 4.4.0（须 > 已存在的 4.3.1）。
+- 自测从 83 项增加到 **111 项**，新增用例覆盖 KV 系数、显存预估结构、router 标记与代理路由、startLlm 参数拼装（KV/MoE/router）、CONFIG_DEFAULTS 新键，以及前端接线（四个设置项 / `#vram-hint` 三项相加 / router 状态条）。
+- **注意**：router 模式必须显式给 `-c`（否则用模型原生 262144 上下文、KV 吃满显存）；本机 32GB 一次只装得下一个 27B，故 `LLM_ROUTER_MAX` 默认 1。
+
 ### 4.2.2
 - **修好「切到本地大模型后第一轮工具调用报 `DeepSeek Messages expected a JSON object`」**：根因是本地模型（llama-server，标准 OpenAI 协议）被错挂在 `llm-deepseek` 适配器（DeepSeek 私有 Messages 协议）上——简单回复碰巧能过，但工具调用参数解析一碰就炸。现在本地模型改走 `llm-pi-ai` 路由下的 `local-llama`（`openai-completions` 协议），云端 `deepseek` 路由一字不动。
 - **启动器同步逻辑跟着改**：`syncSettings()` 不再维护 `llm-deepseek` 条目，改为在 `llm-pi-ai` 路由里维护 `local-llama`（保留云端 `deepseek` provider），并把 `agent-default-model` 指向 `local-llama`。重装/重置后不会再踩回错适配器。

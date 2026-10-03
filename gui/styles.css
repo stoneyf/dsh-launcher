@@ -143,7 +143,20 @@ body {
 .model-meta { color: var(--text-dim); font-size: 12px; display: flex; gap: 8px; flex-wrap: wrap; }
 .quant-tag { background: var(--bg3); border-radius: 4px; padding: 1px 6px; font-size: 11px; }
 .active-tag { background: rgba(63,191,111,.15); color: var(--green); border-radius: 4px; padding: 1px 6px; font-size: 11px; }
+.ctx-tag { background: rgba(59,130,246,.15); color: #3b82f6; border-radius: 4px; padding: 1px 6px; font-size: 11px; }
 .model-actions { display: flex; gap: 8px; }
+/* 4.4：router 多模型热切换状态条 */
+.router-box {
+  background: var(--bg2); border: 1px solid var(--border); border-radius: 10px;
+  padding: 10px 14px; margin-bottom: 12px; font-size: 12px; color: var(--text-dim);
+  display: flex; flex-direction: column; gap: 8px;
+}
+.router-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.router-id { flex: 1; word-break: break-all; color: var(--text); font-family: var(--mono, monospace); }
+.router-state { border-radius: 4px; padding: 1px 8px; font-size: 11px; }
+.router-state.loaded { background: rgba(63,191,111,.15); color: var(--green); }
+.router-state.loading { background: rgba(232,163,61,.18); color: var(--warn, #e8a33d); }
+.router-state.unloaded { background: var(--bg3); color: var(--text-dim); }
 .import-row { display: flex; gap: 8px; margin-top: 14px; }
 .import-row input { flex: 1; }
 .hub-search-row { display: flex; gap: 8px; }
