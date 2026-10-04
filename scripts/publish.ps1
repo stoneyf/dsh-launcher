@@ -1,4 +1,4 @@
-﻿# ============================================================
+# ============================================================
 #  DSH 启动器 GitHub 一键发版
 #  用法:  pwsh scripts\publish.ps1 -Notes "本版本说明"
 #  可选:  -Repo stoneyf/dsh-launcher  -Token <PAT>  -Force（同名 release 已存在时覆盖）
@@ -94,7 +94,11 @@ if ($r.Code -ne 0) { Write-Host "[publish] 警告: git push main 失败（可稍
 $r = Run-Git tag -f $tag
 if ($r.Code -ne 0) { throw "git tag $tag 失败`n$($r.Out)" }
 $headAfter = (Run-Git rev-parse HEAD).Out.Trim()
-Write-Host "[publish] HEAD=$($headAfter.Substring(0,7)) tag=$tag"
+# 修 2026-10-03/10-04 两次踩到的崩溃：$headAfter 为空或含 BOM/短串时，.Substring(0,7) 会抛
+# "Index and length must refer to a location within the string" —— 而它发生在「zip 已打包、
+# manifest 已写、tag 已打」之后，会让脚本半途倒下（包和 tag 有了、GitHub 上没有 Release）。
+$headShort = if ($headAfter.Length -ge 7) { $headAfter.Substring(0, 7) } else { $headAfter }
+Write-Host "[publish] HEAD=$headShort tag=$tag"
 
 # ---------- 6) GitHub token ----------
 if (-not $Token) {
