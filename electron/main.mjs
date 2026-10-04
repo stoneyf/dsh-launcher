@@ -56,6 +56,13 @@ if (!gotLock) {
   // --silent（开机自启）：后台静默，不弹窗口，只进托盘
   const silent = process.argv.includes('--silent')
   const appIcon = join(here, '..', 'gui', 'icon.png')
+  const appIconIco = join(here, '..', 'launcher.ico')
+  // Windows: set the app-level icon (ICO more reliable than PNG on Windows)
+  try {
+    let ni = nativeImage.createFromPath(appIconIco)
+    if (ni.isEmpty()) ni = nativeImage.createFromPath(appIcon)
+    if (!ni.isEmpty()) app.setIcon(ni)
+  } catch { /* ignore */ }
 
   function showWindow() {
     if (!mainWindow) return
@@ -257,6 +264,13 @@ if (!gotLock) {
           sandbox: true,
         },
       })
+
+      // Windows: setIcon on the window instance (ICO more reliable than PNG)
+      try {
+        let ni = nativeImage.createFromPath(appIconIco)
+        if (ni.isEmpty()) ni = nativeImage.createFromPath(appIcon)
+        if (!ni.isEmpty()) mainWindow.setIcon(ni)
+      } catch { /* ignore */ }
 
       // 外部链接（如打开 Harness）一律交给系统默认浏览器
       mainWindow.webContents.setWindowOpenHandler(({ url }) => {

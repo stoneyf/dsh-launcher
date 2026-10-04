@@ -4,18 +4,17 @@
 
 ## 更新日志
 
+### 4.5.2
+- **启动器图标换成卡比正面版**：原鲸鱼娘静版主图改为「卡比角色设定图」里**正面全身图**（顶部左侧），用视觉模型（modlens）定位裁剪区域后纯 Node.js 重做 7 档尺寸（16/24/32/48/64 用 BMP(DIB) + 128/256 用 PNG），`gui\icon.png` 256×256 + `launcher.ico` 205KB + `dsh-launcher.exe` 216KB 全部更新。exe/桌面/任务栏/托盘/网页标签图标全部换成卡比；**窗口标题栏图标**仍显示旧原子 logo（Electron on Windows 限制：运行时 `setIcon` 无法替换 exe 内嵌的 Win32 HICON，彻底修需重编译 Electron runtime exe，~200MB，暂不做）。
+- `electron/main.mjs` 加 `app.setIcon()` + `mainWindow.setIcon()`（ICO 优先、PNG 兜底）——对托盘/网页生效，窗口标题栏受上述限制。
+- 回滚备份：`_backup_icon_chibi\`（旧鲸鱼娘三件套）。
+
 ### 4.5.1
-- **换图标：鲸鱼娘**（exe / 窗口 / 托盘 / 网页标签统一）。素材来自社区 MIT 许可的鲸鱼娘品牌母版（[TreapGoGo/deepseek-whale-girl](https://github.com/TreapGoGo/deepseek-whale-girl)，1254×1254 透明 PNG），做成 `gui\icon.png`（256）+ `launcher.ico`（16/24/32/48/64/128/256 七种尺寸，PNG 内嵌）。
-  - `dsh-launcher.exe` 用 `csc /win32icon:launcher.ico` 重编（12KB → 126.5KB，图标已嵌入）。
-  - 任务栏/桌面的 exe 图标**立刻生效**；窗口与托盘图标要**重启启动器**才换（Electron 启动时加载）。
+- **本地视觉（mmproj）+ 鲸鱼娘图标**：按模型挂视觉投影器（`models\preset.ini` 逐模型节 `mmproj = <路径>`，按文件名前缀自动配对），Harness 侧同步逐模型声明 `inputModalities`；首个本地视觉模型 Qwen3-VL-8B-Instruct（7.0GB + 投影器 1.1GB）实测读图正确、加载 8.4s、看完自动卸载；dsh-tasks Auto 池标 `vision: true`，有图走本地、无图换回文字模型。启动器图标换成鲸鱼娘（MIT 许可）。
+- 自测 177/0 全绿（4.5.0 新增 8 条 mmproj 断言）。
 
 ### 4.5.0
-- **本地视觉模型支持：按模型挂视觉投影器（mmproj）**。router 模式下 `--mmproj` 是**全局**参数，挂上去会强加给 `models\` 里的所有模型（投影器与模型对不上 → 加载失败），所以此前只有「单模型 + 一个投影器」这一种用法。现在投影器改由 `models\preset.ini` 的**逐模型节**携带 `mmproj = <路径>`，按「文件名前缀 = 模型名」的约定自动配对；`LLM_MMPROJ` 保留给单模型模式。
-  - Harness 侧的图像能力也改成**逐模型声明**（`inputModalities`）：只有真配了投影器的模型才声明图像输入 —— 声明错的代价是整轮 `UNSUPPORTED_CONTENT` 失败（2026-10-04 实测踩过）。
-  - 约定：投影器放 `D:\dsh-launcher\mmproj\`，文件名去掉 `-mmproj…` 后缀后是模型名的前缀。例：模型 `Qwen3-VL-8B-Instruct-UD-Q6_K_XL` ← `mmproj\Qwen3-VL-8B-Instruct-mmproj-F16.gguf`。以后换/加视觉模型只放文件，不改代码。
-  - 实测（llama.cpp b11247）：preset 节里的 `mmproj` 确实被解析成该模型的 `--mmproj`（用「故意给不存在的路径」验证，加载日志里能看到该参数）。
-  - 首个本地视觉模型 **Qwen3-VL-8B-Instruct**（Q6_K_XL 7.0GB + 投影器 1.1GB）：配合 dsh-tasks 的 Auto 路由，**有图走本地、无图自动卸载换回文字模型**（router `--models-max 1`）。
-- 自测 **169 → 177 项**，全绿。
+- **按模型挂视觉投影器（mmproj）**：router 模式下 `--mmproj` 是**全局**参数（会强加给 `models\` 里所有模型，投影器对不上就加载失败），改由 `models\preset.ini` 的**逐模型节**携带 `mmproj = <路径>`，按「投影器文件名去掉 `-mmproj…` 后缀 = 模型名前缀」自动配对（投影器放 `D:\dsh-launcher\mmproj\`，**别放 models\**，否则 router 会把它当成模型）。
 
 ### 4.4.7
 - **自动上下文增加「显存占用上限」**：原来只留 1024MiB 固定余量，实测 Qwen3-Coder-30B-A3B（24.5GB）会占到 **31966/32607 MiB（97.9%）**，只剩 0.6GB —— 桌面稍一用显存就有 OOM 风险。现在 KV 预算取「固定余量」与「显卡总量的 95%」两者更小者（单一真相源 `kvBudgetFor()`，单模型与 router 逐模型共用）。
