@@ -653,6 +653,23 @@ step('⑭ 4.4 features start')
   // syncSettings router 模式逐模型 contextWindow
   ok(/ctxForModel\(p\)/.test(coreSrc), 'syncSettings router 模式用 ctxForModel 逐模型算')
 
+  // (j2) 4.5：按模型挂视觉投影器（mmproj）——router 模式不能全局挂，改由 preset 逐模型节携带
+  const fMmproj = join(FIXTURE, 'mmproj')
+  mkdirSync(fMmproj, { recursive: true })
+  writeFileSync(join(fMmproj, 'TestModel-A-mmproj-F16.gguf'), Buffer.alloc(1024))
+  ok(core.mmprojFor(gguf1) !== null, 'mmprojFor：文件名前缀对得上的模型 → 找到投影器')
+  ok(core.mmprojFor(gguf2) === null, 'mmprojFor：没配投影器的模型 → null（不能错挂）')
+  const preset2 = core.buildLlmPreset()
+  const tx2 = readFileSync(preset2.file, 'utf8')
+  const secA = tx2.split('[TestModel-A]')[1]?.split('\n[')[0] ?? ''
+  const secB = tx2.split('[TestModel-B]')[1]?.split('\n[')[0] ?? ''
+  ok(/mmproj = /.test(secA) && secA.includes('TestModel-A-mmproj-F16.gguf'), 'preset 只在配了投影器的节里写 mmproj')
+  ok(!/mmproj/.test(secB), 'preset 不给没配投影器的模型写 mmproj')
+  ok(secA.includes('/') && !secA.includes('mmproj = ' + 'D:\\'), 'preset 里的路径用正斜杠（反斜杠有被当转义的风险）')
+  ok(/mmprojFor\(p\) !== null/.test(coreSrc), 'syncSettings 逐模型声明图像输入能力')
+  ok(/!router && mmproj/.test(svcSrc), 'router 模式不传全局 --mmproj（会强加给目录里所有模型）')
+  ok(/mmprojFor, syncSettings/.test(svcSrc), 'services.mjs 从 core.mjs 导入了 mmprojFor')
+
   // 漏 import 的坑（2026-10-03 实测踩到）：main.mjs 的 listModels() 用了 ctxForModel，
   // 但没从 core.mjs 导入 → try/catch 把 ReferenceError 吞掉 → /api/models 的 ctx 全是 null
   // （模型页因此不显示各模型上下文）。静态 + 接口双重断言，避免再犯。

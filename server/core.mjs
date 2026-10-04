@@ -12,7 +12,7 @@ import { spawnSync } from 'node:child_process'
 import { createRequire } from 'node:module'
 import net from 'node:net'
 
-export const LAUNCHER_VERSION = '4.4.7'
+export const LAUNCHER_VERSION = '4.5.0'
 
 const serverDir = dirname(fileURLToPath(import.meta.url))
 /** 根目录：默认取 server 上一级；DSH_LAUNCHER_ROOT 可覆盖（与传给 dsh 进程的同名变量一致，便于测试与外部发现）。 */
@@ -206,6 +206,44 @@ export function mmprojPath() {
   return v.includes(':\\') || v.startsWith('\\\\') ? v : join(ROOT, v)
 }
 
+/** 某个模型配套的视觉投影器（mmproj）路径；没有就返回 null。
+ *
+ *  为什么必须「按模型」：router 模式下 llama-server 一次扫描整个 models 目录，而
+ *  `--mmproj` 是**全局**参数 —— 挂上去会强加给目录里所有模型（投影器与模型对不上时
+ *  加载会失败）。所以 router 模式改由 preset.ini 的**逐模型节**带 `mmproj = <path>`。
+ *
+ *  约定（以后换任何视觉模型都只放文件、不改代码）：投影器放 <ROOT>\mmproj\ 下，
+ *  文件名去掉 `-mmproj…` 后缀后，是模型名的前缀。
+ *  例：模型 `Qwen3-VL-8B-Instruct-UD-Q6_K_XL` 配
+ *  `mmproj\Qwen3-VL-8B-Instruct-mmproj-F16.gguf`。
+ *
+ *  LLM_MMPROJ 显式指定时：单模型模式无条件采用（保持老行为）；router 模式要求前缀匹配，
+ *  否则会把某个模型的投影器错挂到别的模型上。
+ *  @param {string} [modelArg] gguf 路径；缺省 = 当前 LLM_MODEL
+ *  @returns {string|null} */
+export function mmprojFor(modelArg) {
+  const model = modelArg || modelPath()
+  const base = String(model).split(/[\\/]/).pop().replace(/\.gguf$/i, '').toLowerCase()
+  const stemOf = (p) => String(p).split(/[\\/]/).pop().replace(/\.gguf$/i, '').replace(/-mmproj.*$/i, '').toLowerCase()
+  const explicit = mmprojPath()
+  if (explicit !== null) {
+    if (!isRouterMode()) return explicit
+    const s = stemOf(explicit)
+    if (s !== '' && base.startsWith(s)) return explicit
+  }
+  const dir = join(ROOT, 'mmproj')
+  if (!existsSync(dir)) return null
+  let best = null
+  try {
+    for (const f of readdirSync(dir)) {
+      if (!/\.gguf$/i.test(f)) continue
+      const s = stemOf(f)
+      if (s === '' || !base.startsWith(s)) continue
+      if (best === null || s.length > stemOf(best).length) best = f
+    }
+  } catch { return null }
+  return best === null ? null : join(dir, best)
+}
 export function llmBaseUrl() {
   const c = readConfig()
   return `http://${c.LLM_HOST}:${Number(c.LLM_PORT)}`
@@ -364,13 +402,20 @@ export function ctxForModel(modelPath) {
  *  **必须无 BOM**（BOM 导致 llama.cpp 解析失败，实测）。
  *  @returns {{file:string, models:Array<{name:string, ctx:number}>}} */
 export function buildLlmPreset() {
-  const models = listGgufNames().map(name => ({
-    name: name.replace(/\.gguf$/i, ''),
-    ctx: ctxForModel(join(DIRS.models, name)),
-  }))
+  const models = listGgufNames().map(name => {
+    const p = join(DIRS.models, name)
+    return {
+      name: name.replace(/\.gguf$/i, ''),
+      ctx: ctxForModel(p),
+      // 这个模型配套的视觉投影器（没配就是 null）——只写进它自己的节，不污染别的模型。
+      mmproj: mmprojFor(p),
+    }
+  })
   const lines = ['[*]', 'ctx-size = 0']
   for (const m of models) {
     lines.push('', `[${m.name}]`, `ctx-size = ${m.ctx}`)
+    // 路径统一用正斜杠：preset 的值是「原样交给 CLI」的，反斜杠有被当转义的风险。
+    if (m.mmproj) lines.push(`mmproj = ${String(m.mmproj).replace(/\\/g, "/")}`)
   }
   const file = join(DIRS.models, 'preset.ini')
   writeFileSync(file, lines.join('\n') + '\n', { encoding: 'utf8' })
@@ -453,8 +498,9 @@ export function syncSettings() {
   // 服务在跑时两者可能不同（改了配置没重启模型）——那时声明配置值会让 Harness 超出服务器能力。
   const ctx = effectiveCtx()
   const maxTok = resolveMaxTokens(ctx)
-  // 配置了视觉投影器（LLM_MMPROJ）时声明图像输入能力，DSH 才会放行图片内容。
-  const vision = mmprojPath() !== null
+  // 视觉能力**按模型**声明（4.5）：只有配了对应投影器（mmproj）的模型才声明图像输入。
+  // 声明错代价很大：Harness 会把图片发给看不了图的模型 → 整轮 UNSUPPORTED_CONTENT。
+
   // llama-server 说的是标准 OpenAI 协议，必须挂在 openai-completions 适配器下。
   // 4.2.2 之前本地模型误配在 llm-deepseek（DeepSeek 私有 Messages 协议）上，
   // 简单回复碰巧能过、但工具调用参数解析一碰就报 "DeepSeek Messages expected a JSON object"。
@@ -474,7 +520,7 @@ export function syncSettings() {
         id: name.replace(/\.gguf$/i, ''),
         contextWindow: mCtx,
         maxTokens: Math.min(pMax, mCtx),
-        ...(vision ? { inputModalities: ['text', 'image'] } : {}),
+        ...(mmprojFor(p) !== null ? { inputModalities: ['text', 'image'] } : {}),
       }
     })
   } else {
@@ -483,7 +529,7 @@ export function syncSettings() {
         id,
         contextWindow: ctx,
         maxTokens: maxTok,
-        ...(vision ? { inputModalities: ['text', 'image'] } : {}),
+        ...(mmprojFor() !== null ? { inputModalities: ['text', 'image'] } : {}),
       },
     ]
   }

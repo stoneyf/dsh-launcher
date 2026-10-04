@@ -66,6 +66,15 @@ export async function listGitHubVersions() {
 }
 
 export const CHANGELOG = `
+4.5.0
+    · 本地视觉模型：按模型挂视觉投影器（mmproj）
+      —— router 模式不再用全局 --mmproj（它会被强加给 models\\ 目录里所有模型，投影器与模型对不上就加载失败），
+         改由 models\\preset.ini 的逐模型节携带 mmproj = <路径>，按「文件名前缀 = 模型名」自动配对
+      —— Harness 侧同步改成逐模型声明图像输入能力：只有真配了投影器的模型才声明，
+         声明错会把图片发给看不了图的模型，整轮 UNSUPPORTED_CONTENT 失败
+      —— 约定：投影器放 mmproj\\ 目录，文件名去掉 -mmproj… 后缀后是模型名的前缀；以后换模型只放文件、不改代码
+      —— 实测首个本地视觉模型 Qwen3-VL-8B-Instruct（7.0GB + 投影器 1.1GB）：有图走本地，
+         无图自动卸载换回文字模型（router --models-max 1）
 4.4.7
     · 本地模型进入「准确优先」形态，一次解决四类老毛病
       —— 上下文不再谎报：向 Harness 声明的是服务器**实际生效**的上下文（读 logs\\llm-run.json，带进程存活校验），

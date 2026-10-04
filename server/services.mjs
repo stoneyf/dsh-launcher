@@ -13,7 +13,7 @@ import { join } from 'node:path'
 import { EventEmitter } from 'node:events'
 import {
   DIRS, ROOT, readConfig, writePid, readPid, clearPid, logPath, logTail,
-  nodeExe, llmBaseUrl, modelPath, modelId, mmprojPath, syncSettings, killProcessTree,
+  nodeExe, llmBaseUrl, modelPath, modelId, mmprojPath, mmprojFor, syncSettings, killProcessTree,
   tcpPortBusy, freePortAfter, sleep, portHolderPids, waitPortFree, resolveCtx,
   isRouterMode, listGgufNames, writeLlmRun, clearLlmRun, runningLlmRun, buildLlmPreset,
   readProfileEntry,
@@ -148,7 +148,7 @@ export async function llmStatus() {
     port: Number(cfg.LLM_PORT),
     model: run?.alias ?? modelId(),
     modelFile: run?.modelPath ?? modelPath(),
-    mmproj: mmprojPath(),
+    mmproj: mmprojFor(run?.modelPath ?? modelPath()),
     endpoint: `${llmBaseUrl()}/v1`,
     health,
     router: run?.router ?? isRouterMode(),
@@ -240,8 +240,10 @@ export async function startLlm() {
   } else if (!existsSync(model)) {
     throw new Error(`模型文件不存在（${model}）。请在启动器模型管理中下载。`)
   }
-  const mmproj = mmprojPath()
-  if (mmproj && !existsSync(mmproj)) throw new Error(`视觉投影器文件不存在（${mmproj}）。请先下载 mmproj 文件，或清空 LLM_MMPROJ。`)
+  // router 模式**不能**全局挂 mmproj：llama-server 会把 --mmproj 强加给 models 目录里
+  // 所有模型（投影器与模型不匹配 → 加载失败）。router 的视觉能力改由 preset.ini 的
+  // 逐模型节携带（见 buildLlmPreset）；这里的 mmproj 只管单模型模式。
+  const mmproj = router ? null : mmprojFor()
   if (await tcpPortBusy(cfg.LLM_HOST, Number(cfg.LLM_PORT))) {
     // 端口被「同一个」本地模型占着（如 dsh-tasks 插件 Auto 本地切换启动的实例）：
     // 提示用「重启本地模型」，而不是误导用户去改端口号。
@@ -291,8 +293,9 @@ export async function startLlm() {
   // 用于关掉推理模型的思考链等：见 core.mjs CONFIG_DEFAULTS 里的说明。
   const extraArgs = String(cfg.LLM_EXTRA_ARGS ?? '').trim()
   if (extraArgs) args.push(...extraArgs.split(/\s+/).filter(Boolean))
-  // 视觉：加载 mmproj 投影器后，llama-server 支持图像/视频输入（OpenAI image_url）
-  if (mmproj) args.push('--mmproj', mmproj)
+  // 视觉：单模型模式在这里全局挂投影器（llama-server 支持图像/视频输入 image_url）；
+  // router 模式由 preset.ini 的逐模型节负责（见 buildLlmPreset）。
+  if (!router && mmproj) args.push('--mmproj', mmproj)
   const proc = spawn(exe, args, {
     cwd: DIRS.llm,
     stdio: ['ignore', 'pipe', 'pipe'],

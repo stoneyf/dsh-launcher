@@ -4,6 +4,14 @@
 
 ## 更新日志
 
+### 4.5.0
+- **本地视觉模型支持：按模型挂视觉投影器（mmproj）**。router 模式下 `--mmproj` 是**全局**参数，挂上去会强加给 `models\` 里的所有模型（投影器与模型对不上 → 加载失败），所以此前只有「单模型 + 一个投影器」这一种用法。现在投影器改由 `models\preset.ini` 的**逐模型节**携带 `mmproj = <路径>`，按「文件名前缀 = 模型名」的约定自动配对；`LLM_MMPROJ` 保留给单模型模式。
+  - Harness 侧的图像能力也改成**逐模型声明**（`inputModalities`）：只有真配了投影器的模型才声明图像输入 —— 声明错的代价是整轮 `UNSUPPORTED_CONTENT` 失败（2026-10-04 实测踩过）。
+  - 约定：投影器放 `D:\dsh-launcher\mmproj\`，文件名去掉 `-mmproj…` 后缀后是模型名的前缀。例：模型 `Qwen3-VL-8B-Instruct-UD-Q6_K_XL` ← `mmproj\Qwen3-VL-8B-Instruct-mmproj-F16.gguf`。以后换/加视觉模型只放文件，不改代码。
+  - 实测（llama.cpp b11247）：preset 节里的 `mmproj` 确实被解析成该模型的 `--mmproj`（用「故意给不存在的路径」验证，加载日志里能看到该参数）。
+  - 首个本地视觉模型 **Qwen3-VL-8B-Instruct**（Q6_K_XL 7.0GB + 投影器 1.1GB）：配合 dsh-tasks 的 Auto 路由，**有图走本地、无图自动卸载换回文字模型**（router `--models-max 1`）。
+- 自测 **169 → 177 项**，全绿。
+
 ### 4.4.7
 - **自动上下文增加「显存占用上限」**：原来只留 1024MiB 固定余量，实测 Qwen3-Coder-30B-A3B（24.5GB）会占到 **31966/32607 MiB（97.9%）**，只剩 0.6GB —— 桌面稍一用显存就有 OOM 风险。现在 KV 预算取「固定余量」与「显卡总量的 95%」两者更小者（单一真相源 `kvBudgetFor()`，单模型与 router 逐模型共用）。
   - 各模型新值（本机 32GB + q8_0 KV）：Q4_K_P 262144 / Q6_K 229376 / **Q8_0 49152** / 35B-A3B 262144 / Coder-30B-A3B 81920。
