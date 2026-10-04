@@ -1,5 +1,5 @@
-{
-    "version":  "4.5.1",
-    "notes":  "v4.5.1 —— 本地视觉模型 + 鲸鱼娘图标\n\n· 本地视觉：按模型挂视觉投影器（mmproj）。router 模式不再全局挂 --mmproj（会强加给目录里所有模型），改由 models\\preset.ini 的逐模型节携带，按「文件名前缀 = 模型名」自动配对；Harness 侧同步改成逐模型声明图像输入能力。\n· 27B 家族就是视觉语言模型：Qwen3.8-27B 加 0.86GB 投影器即可看图，实测 Q4_K_P 13s / Q6_K 15.3s / Q8_0 25.8s；Auto 候选池里标 vision，有图走本地、无图自动卸载换回文字模型。\n· 换图标：鲸鱼娘（exe / 窗口 / 托盘 / 网页标签），素材来自 MIT 许可的社区资源库 TreapGoGo/deepseek-whale-girl。\n· 自测 169 → 177 全绿。",
-    "url":  "https://github.com/stoneyf/dsh-launcher/releases/download/v4.5.1/launcher-v4.5.1.zip"
+﻿{
+    "version": "4.5.2",
+    "notes": "v4.5.2 卡比正面版图标\n\n启动器图标换成卡比角色设定图里的正面全身图（顶部左侧），用视觉模型定位裁剪区域后纯 Node.js 重做 7 档尺寸。\nexe/桌面/任务栏/托盘/网页标签图标全部换成卡比；窗口标题栏图标仍显示旧原子 logo（Electron on Windows 限制）。\n\nelectron/main.mjs 加 app.setIcon() + mainWindow.setIcon()（ICO 优先、PNG 兜底）。\n回滚备份：_backup_icon_chibi/（旧鲸鱼娘三件套）。",
+    "url": "https://github.com/stoneyf/dsh-launcher/releases/download/v4.5.2/launcher-v4.5.2.zip"
 }
