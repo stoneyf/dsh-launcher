@@ -66,6 +66,11 @@ export async function listGitHubVersions() {
 }
 
 export const CHANGELOG = `
+4.5.1
+    · 换图标：鲸鱼娘（exe / 窗口 / 托盘 / 网页标签）
+      —— 素材：社区 MIT 许可的鲸鱼娘品牌母版（TreapGoGo/deepseek-whale-girl，1254×1254 透明 PNG）
+      —— gui\\icon.png（256）+ launcher.ico（16/24/32/48/64/128/256 七种尺寸）
+      —— dsh-launcher.exe 用 csc /win32icon 重编（12KB → 126.5KB）；exe 图标立刻生效，窗口/托盘需重启启动器
 4.5.0
     · 本地视觉模型：按模型挂视觉投影器（mmproj）
       —— router 模式不再用全局 --mmproj（它会被强加给 models\\ 目录里所有模型，投影器与模型对不上就加载失败），

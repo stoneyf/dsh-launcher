@@ -4,6 +4,11 @@
 
 ## 更新日志
 
+### 4.5.1
+- **换图标：鲸鱼娘**（exe / 窗口 / 托盘 / 网页标签统一）。素材来自社区 MIT 许可的鲸鱼娘品牌母版（[TreapGoGo/deepseek-whale-girl](https://github.com/TreapGoGo/deepseek-whale-girl)，1254×1254 透明 PNG），做成 `gui\icon.png`（256）+ `launcher.ico`（16/24/32/48/64/128/256 七种尺寸，PNG 内嵌）。
+  - `dsh-launcher.exe` 用 `csc /win32icon:launcher.ico` 重编（12KB → 126.5KB，图标已嵌入）。
+  - 任务栏/桌面的 exe 图标**立刻生效**；窗口与托盘图标要**重启启动器**才换（Electron 启动时加载）。
+
 ### 4.5.0
 - **本地视觉模型支持：按模型挂视觉投影器（mmproj）**。router 模式下 `--mmproj` 是**全局**参数，挂上去会强加给 `models\` 里的所有模型（投影器与模型对不上 → 加载失败），所以此前只有「单模型 + 一个投影器」这一种用法。现在投影器改由 `models\preset.ini` 的**逐模型节**携带 `mmproj = <路径>`，按「文件名前缀 = 模型名」的约定自动配对；`LLM_MMPROJ` 保留给单模型模式。
   - Harness 侧的图像能力也改成**逐模型声明**（`inputModalities`）：只有真配了投影器的模型才声明图像输入 —— 声明错的代价是整轮 `UNSUPPORTED_CONTENT` 失败（2026-10-04 实测踩过）。
