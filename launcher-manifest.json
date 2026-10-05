@@ -1,5 +1,5 @@
-﻿{
-    "version": "4.5.2",
-    "notes": "v4.5.2 卡比正面版图标\n\n启动器图标换成卡比角色设定图里的正面全身图（顶部左侧），用视觉模型定位裁剪区域后纯 Node.js 重做 7 档尺寸。\nexe/桌面/任务栏/托盘/网页标签图标全部换成卡比；窗口标题栏图标仍显示旧原子 logo（Electron on Windows 限制）。\n\nelectron/main.mjs 加 app.setIcon() + mainWindow.setIcon()（ICO 优先、PNG 兜底）。\n回滚备份：_backup_icon_chibi/（旧鲸鱼娘三件套）。",
-    "url": "https://github.com/stoneyf/dsh-launcher/releases/download/v4.5.2/launcher-v4.5.2.zip"
+{
+    "version":  "4.5.3",
+    "notes":  "## 4.5.3\n\n**重启 Harness 不再新开浏览器标签页**\n\n- `restartDsh()` 原来默认 `openBrowser: openBrowser ?? OPEN_BROWSER === \u00271\u0027`，于是**每重启一次 dsh 就多一个标签页**，旧标签页不会自己关。\n- 多个 DSH 页面同时轮询会互相抢字幕（鲸鱼助手插件实测：同一秒里既有干净字幕又有工具文字，日志里堆过 10 个实例）。\n- 现在**重启默认传 `--no-open`**（要新开请显式 `openBrowser: true`）；**首次启动与点「启动」仍照常打开浏览器**。\n- 配套（鲸鱼助手插件侧）：加了「唯一活动页」锁——最新打开的页面夺锁，其他页面自动转为被动（停止轮询与朗读，面板里给一句提示 + 一键把老师叫过来）。\n\n**顺手补齐内置 CHANGELOG**：此前停留在 4.4.7，现在 4.5.3 / 4.5.2 / 4.5.1 / 4.5.0 齐全（启动器「检查更新」页可见）。\n\n**自测**：`test\\selftest.mjs` 177 通过 / 0 失败。\n",
+    "url":  "https://github.com/stoneyf/dsh-launcher/releases/download/v4.5.3/launcher-v4.5.3.zip"
 }
