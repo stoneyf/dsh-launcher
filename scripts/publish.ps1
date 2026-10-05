@@ -23,15 +23,25 @@ Set-Location $root
 
 # PS 5.1 会把原生命令（git）的 stderr 转成错误记录；EAP=Stop 下即使命令实际
 # 成功也会中断脚本（git 的进度/结果信息恰恰都走 stderr）。统一经此函数调用
-# git：临时降 EAP，按 $LASTEXITCODE 判定成败。
+# git：临时降 EAP，按退出码判定成败。
+#
+# 2026-10-05 修：原来用 `& git @GitArgs 2>&1 | Out-String` + $LASTEXITCODE —— 在 PS 5.1 下
+# **不可靠**：git 往 stderr 写东西时管道会吞掉输出（实测 `rev-parse HEAD` 拿到空串），
+# 退出码也可能丢（实测 `git diff --cached --quiet` 明明返回 1 却被当成 0）→ 于是
+# 「manifest 变了」被误判成「无变化、跳过提交」，线上 manifest 停在旧版本、Release 白建。
+# 现在改用 Start-Process 分别重定向 stdout/stderr，退出码取进程对象的 ExitCode，稳。
 function Run-Git {
   param([string[]]$GitArgs)
-  $prev = $ErrorActionPreference
-  $ErrorActionPreference = 'Continue'
-  $out = & git @GitArgs 2>&1 | Out-String
-  $code = $LASTEXITCODE
-  $ErrorActionPreference = $prev
-  [pscustomobject]@{ Code = $code; Out = $out }
+  $outFile = [IO.Path]::GetTempFileName()
+  $errFile = [IO.Path]::GetTempFileName()
+  try {
+    $proc = Start-Process -FilePath 'git' -ArgumentList $GitArgs -NoNewWindow -Wait -PassThru `
+      -RedirectStandardOutput $outFile -RedirectStandardError $errFile
+    $text = ([IO.File]::ReadAllText($outFile)) + ([IO.File]::ReadAllText($errFile))
+    [pscustomobject]@{ Code = $proc.ExitCode; Out = $text }
+  } finally {
+    Remove-Item $outFile, $errFile -Force -ErrorAction SilentlyContinue
+  }
 }
 
 # ---------- 1) 版本号 ----------
@@ -93,12 +103,22 @@ if ($r.Code -ne 0) { Write-Host "[publish] 警告: git push main 失败（可稍
 # 「远程 tag 指向旧提交」的错位（历史上发生过）
 $r = Run-Git tag -f $tag
 if ($r.Code -ne 0) { throw "git tag $tag 失败`n$($r.Out)" }
-$headAfter = (Run-Git rev-parse HEAD).Out.Trim()
+$headAfter = ((Run-Git rev-parse HEAD).Out -replace '\s', '')
 # 修 2026-10-03/10-04 两次踩到的崩溃：$headAfter 为空或含 BOM/短串时，.Substring(0,7) 会抛
 # "Index and length must refer to a location within the string" —— 而它发生在「zip 已打包、
 # manifest 已写、tag 已打」之后，会让脚本半途倒下（包和 tag 有了、GitHub 上没有 Release）。
 $headShort = if ($headAfter.Length -ge 7) { $headAfter.Substring(0, 7) } else { $headAfter }
 Write-Host "[publish] HEAD=$headShort tag=$tag"
+
+# ---------- 5b) 自检：HEAD 里的 manifest 必须已经是本次版本 ----------
+# 2026-10-05 新增。此前 Run-Git 不可靠导致「manifest 明明变了却被判成无变化、跳过提交」，
+# 脚本照样往下走：Release 建了、资产传了，但 main 上的 manifest 仍是旧版本 → 启动器
+# 「检查更新」永远看不到新版本。这种失败是**静默**的，所以这里显式断言一次。
+$headManifest = (Run-Git show "HEAD:launcher-manifest.json").Out
+if ($headManifest -notmatch ('"version"\s*:\s*"' + [regex]::Escape($ver) + '"')) {
+  throw "自检失败：HEAD 里的 launcher-manifest.json 版本不是 $ver（说明 manifest 没被提交）。`n请检查上面的 git 提交/推送步骤，或手动提交 manifest 后重跑。`n$headManifest"
+}
+Write-Host "[publish] 自检通过：HEAD 里的 manifest 版本已是 $ver"
 
 # ---------- 6) GitHub token ----------
 if (-not $Token) {
