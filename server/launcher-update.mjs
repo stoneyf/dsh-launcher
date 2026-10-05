@@ -66,6 +66,14 @@ export async function listGitHubVersions() {
 }
 
 export const CHANGELOG = `
+4.5.3
+    · 重启 Harness 不再新开浏览器标签页
+      —— 原来 restartDsh() 默认跟随 OPEN_BROWSER=1，每重启一次就多一个 dsh 标签页，旧标签页不会自己关
+      —— 多个页面同时轮询会互相抢字幕（鲸鱼助手插件实测同一秒里既有干净字幕又有工具文字）
+      —— 现在重启默认传 --no-open；首次启动与点「启动」仍照常打开浏览器
+
+4.5.2
+    · 启动器图标换成卡比正面版（7 档尺寸，16/24/32/48/64 用 BMP 条目、128/256 用 PNG）
 4.5.1
     · 换图标：鲸鱼娘（exe / 窗口 / 托盘 / 网页标签）
       —— 素材：社区 MIT 许可的鲸鱼娘品牌母版（TreapGoGo/deepseek-whale-girl，1254×1254 透明 PNG）

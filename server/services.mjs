@@ -701,8 +701,12 @@ export async function restartDsh({ openBrowser } = {}) {
       // 于是「从对话里重启 dsh」完全跳过了启动前体检与失败自愈——
       // 插件/patch 一旦有问题，重启必然失败（2026-09-24 实际发生：
       // cordis.patch.yml 重复键让重启卡到 90s 超时）。
+      //
+      // 4.5.3：**重启默认不再打开浏览器**。原来这里默认跟随 OPEN_BROWSER=1，
+      // 于是每重启一次就新开一个 DSH 标签页，旧标签页不会自己关——多个页面同时
+      // 轮询/抢字幕（鲸鱼助手实测堆过 10 个实例）。要新开请显式传 openBrowser: true。
       start: () => startDshResilient({
-        openBrowser: openBrowser ?? cfg.OPEN_BROWSER === '1',
+        openBrowser: openBrowser === true,
         allowPortFallback: false,
       }),
     })
