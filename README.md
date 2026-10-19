@@ -4,6 +4,42 @@
 
 ## 更新日志
 
+### 4.5.7
+- **模型页在 router 模式下不再显示「当前配置」标签**：`LLM_ROUTER=1` 时 `LLM_MODEL` **不参与启动**（llama-server 命令行里没有 `--model`），到底加载哪个模型由 dsh 会话 / Auto 按需 autoload。原来模型页按文件名比对 `LLM_MODEL` 打「当前配置」标签，会让用户以为正在跑那个模型——实测配置写 `27B-Q4_K_P`、实际跑的是 `35B-A3B`。现在该标签在 router 模式下不再出现（前端 `gui/app.js` 按 `status.routerModels` 是否为空判断，`status` 未就绪时会先自己取一次；后端 `server/main.mjs` 的 `listModels()` 同步判掉）。
+  - 曾试过在列表顶部加一行「当前实际加载：<模型名>」，**已按用户要求移除**（模型页保持干净）。真实模型状态改由 dsh 对话页的 `.wa-model-chip` 小标签显示（在 `dsh-whale-assistant` 插件里）。
+  - 前端改动**刷新启动器页面即生效**；后端改动待下次启动器重启生效。
+  - 回滚：`server/main.mjs.bak-activebadge-20261019`、`gui/app.js.bak-activebadge-20261019`。
+- **模型页合并重复列表**：同一批模型原本在页面上出现两次——上面是 router 的「未加载／加载」行（`status.routerModels`），下面是最早的「已安装模型」卡片（`/api/models`，带大小/ctx/删除）。现合并成**一张卡**：模型名 + 量化 + 大小 + ctx + 加载状态 +「加载/卸载」+「删除」，一个模型只出现一次。`loadRouterBox()` 只负责把旧的独立区域藏起来，状态与按钮改在 `loadInstalled()` 的卡片里渲染（router 的 id 不带 `.gguf` 后缀，用去掉后缀的模型名做索引匹配）。
+- **模型广场：详情就近显示**：原来点开某个仓库后，详情与文件下载列表固定在结果列表的**最末尾**，点哪一条都得滚到页尾看。现在详情面板**直接插在被点的那张卡下面**并滚进视野。实现注意：面板此刻已挂在列表内部，`renderHubResults()` 重建列表前要先 `panel.remove()`，否则 `innerHTML=''` 会把它一起销毁、之后所有 `#hub-files` 查询都取不到。
+- **模型广场：默认显示热门推荐**：搜索框原来预填 `abliterated` 且一进页面就自动搜，现在**清空默认值**——空查询时显示「🔥 热门推荐（GGUF 模型 · 按下载量排序）」，输入关键词后才显示搜索结果。
+  - 热门的数据源用 **`q=GGUF`** 而不是空查询：HF 全站下载量榜被 embedding / 语音 / 视觉模型占满（实测 60 条里 `text-generation` 只有 7 条、且都不是 GGUF 仓库），而搜 "GGUF" 拿到的正是**按下载量排序的 GGUF 仓库**——才是本机能直接跑的。
+  - 再滤掉明显的非对话类（`text-to-speech` / `automatic-speech-recognition` / `image-to-video` / `*-classification` 等）。
+- **模型广场：去掉写死的"快捷下载"预设行**：搜索框下面那 3 个按钮（`Huihui-Qwen3.8-27B` 的 Q4_K/Q3_K/Q6_K）是早期硬编码的，既与下面的热门推荐重复（同一个仓库），指向的也不是用户实际在用的模型。现已删除（`#preset-row` 容器 + 渲染逻辑；`renderPresets()` 留空函数做墓碑，避免遗漏调用点报错）。
+- **界面文件改动后自动重载**（不用再按 Ctrl+R）：前端每 15 秒重新取一份 `app.js` 比对内容哈希，变了就 `location.reload()`。因为服务端静态文件**不带 `Last-Modified`/`ETag`**（实测响应头只有 `Content-Type`），无法用条件请求，只能整份取回比对（本地应用，代价可忽略）。注意：这条生效前的最后一次改动仍需手动刷新一次。
+- **模型广场：列表三行式**（用户参照的样式是"大标题 + 灰色副标题"）：第 1 行**模型名（粗）**——去掉 `owner/` 前缀与 `-GGUF` 后缀、连字符变空格（`unsloth/Qwen3.8-27B-GGUF` → **Qwen3.8 27B**）；第 2 行**完整仓库名**（灰、单行省略，可对照来源）；第 3 行说明与下载量。`.hub-repo` 从"一行两端对齐"改为 `flex-direction: column`。下载与详情不受影响。
+- **界面自动重载覆盖三个文件**：`app.js` / `styles.css` / `index.html` 都纳入轮询（只盯 `app.js` 的话，纯样式改动不会触发重载）。
+- **热门推荐固定 10 条、不翻页**（用户要求"推荐不要超过 10 个"）：空查询时过滤后 `slice(0, 10)`，并隐藏「加载更多」；搜索结果的翻页逻辑不受影响（仍按"这页是否返回满 20 条"判断）。
+- **热门推荐按"模型家族"去重**（用户："覆盖面，像 Qwen3.8 27B 已经出现太多次了"）：抓 3 页（60 条）后按 **家族词 + 参数量**归并（`qwen3.8-27b` 这样的键），同一款模型的各家再打包（unsloth / huihui-ai / HauhauCS 的 `Qwen3.8-27B-*` 只留一个），凑满 **10 个不同模型**。实测 60 条 → 10 条，覆盖 Qwen3.8-27B / Flash-Next / Ornith 9B / Ornith 35B / Bonsai / MiniMax / Tiel Coder / Qwen3.5-9B / Qwen3-Coder-30B 等。只抓 1 页的话去重后往往只剩三五个。
+- **热门推荐的过滤改用白名单**：原来用黑名单排除非对话类，漏了 `image-text-to-video` —— 结果 **MiniMax-H3（视频生成模型）混进了推荐**（用户发现："minimax不是生成视频模型？"）。现在只保留 `text-generation` / `image-text-to-text` / `text2text-generation` 三类，其余（视频生成、TTS、ASR、目标检测、空标签等）一律不进推荐。实测 60 条 → 10 个不同模型，覆盖 Qwen3.8 Flash-Next / Qwen3.8-27B / Ornith 9B·35B / Bonsai / Tiel Coder / Qwen3.5-9B / Qwen3-Coder-30B / Gemma 12B / DeepSeek V4。
+- **模型广场：官方 / 第三方区分标识**（用户要求"加个官方标识做区分"）：按 **owner**（`owner/repo` 里的 owner，不是模型名——名字可以随便起，组织账号不行）判断，命中白名单就打一个绿色「官方」小标。白名单只放**模型出品方**（qwen / meta-llama / google / microsoft / deepseek-ai / mistralai / thudm / 01-ai / moonshotai / minimaxai / zai-org / nvidia / baai / openai / allenai …）与**公认的 GGUF 量化方**（ggml-org / unsloth / bartowski / lmstudio-community / thebloke / quantfactory）。
+  - 实测当前 10 条热门里只有 2 条是官方（都是 unsloth），其余是个人/小团队第三方量化——这个标识正好能让用户一眼分辨"要不要多看一眼仓库说明"。
+- 自测 181/0 保持全绿。
+
+### 4.5.6
+- **启动器不再替用户指定"默认本地模型"（把 Auto 交还给用户）**：以前 `syncSettings()` 每次启动都往 profile 写 `agent-default-model = { provider: 'local-llama', model: <当前模型文件> }`，带来两个后果：① **把 Auto 路由架空**——会话一上来就拿到一个具体模型，dsh-tasks 的 Auto 适配器（`provider=auto / model=auto`）根本不会被问到，"Auto 作为默认模式"名存实亡；② 每次启动都**覆盖掉用户在界面里显式选的模型**。现在启动器只负责一件事：把「本机有哪些本地模型」写进 `llm-pi-ai` 的 provider 清单；默认模型**只在缺失、或指向一个已不存在的本地模型时**才补一个种子值 `auto/auto`，其余情况（已是 `auto/auto`、用户显式选的云端模型、指向确实存在的本地模型）一律原样保留、不覆盖。
+  - 相关：D 项兜底看门狗（本地挂 >30s 把默认切到 `deepseek-flash`）只在默认是 `local-llama` 时才动作；默认交还 Auto 后它自然不再触发——Auto 本身就会在本地不可用时兜底云端，重复兜底反而会破坏 Auto。
+  - 回滚：备份 `workspace\_backup-20261007-launcher-defaultmodel\core.mjs`。
+- 自测 181/0 保持全绿。
+
+### 4.5.5
+- **修本地视觉声明写错键名（会话带图必挂的根因）**：`syncSettings` 写 `llm-pi-ai` 模型条目时用的键是 `inputModalities`——那是 4.2.2 **之前** `llm-deepseek` 私有协议时代的键；4.2.2 起本地模型改走 `openai-completions`（harness `llm-pi-ai`），其模型条目 schema 只认 **`input`**。写错键不报错（未知键被忽略），于是运行中的 dsh 把**所有**本地模型当纯文本，会话一出现图片就 `UNSUPPORTED_CONTENT`（10-05 首轮 VL-8B 带图失败、10-06 截图轮连挂两次的同一根因；4.5.1 的「实测读图正确」是直连 llama-server 测的，没走 dsh 会话通道）。现在写 `input: ['text','image']`，并对存量 profile 一次性做了同样的键名修正（备份 `cordis.patch.yml.bak-modality-20261006`）。
+- 自测新增 2 条断言（`input` 键存在 / 遗留键 `inputModalities:` 不再出现）。
+
+### 4.5.4
+- **本地模型不再默认关掉思考（`LLM_EXTRA_ARGS` 默认从 `--reasoning off` 改为空）**：这个参数是 2026-09-24 为修「DSH 端 `llm-deepseek` 按 `thinking: disabled` 构造请求、与回传的 `reasoning_content` 对不上（报 `Messages expected a JSON object`）」而加的；本地模型随后已改走 `openai-completions` 路由（能正确处理 reasoning），**那个前提已经不存在**。而关掉思考会让推理型模型**"不先想就收尾"**——实测表现就是只表态、不发工具调用（用户原话：「就是说了，然后后面就不干活了」）。
+  - 隔离实测（同一台机、同一个 `Qwen3.8-35B-A3B`）：去掉前 `reasoning_content` 完全没有；去掉后思考被正确摘进独立通道（118 字），**仍然照常发工具调用**，且该会话无任何失败重试（当年那类错误没有复现）。
+  - 想恢复旧行为：把 `LLM_EXTRA_ARGS` 填回 `--reasoning off` 即可。
+
 ### 4.5.3
 - **重启 Harness 不再新开浏览器标签页**：`restartDsh()` 原来默认跟随 `OPEN_BROWSER=1`，于是**每重启一次 dsh 就多一个标签页**，旧标签页不会自己关——多个页面同时轮询、互相抢字幕（鲸鱼助手插件实测同一秒里既有干净字幕又有工具文字，日志里堆过 10 个实例）。现在重启默认传 `--no-open`；首次启动与点「启动」仍照常打开浏览器。
 - 配套（鲸鱼助手插件侧）：加了「唯一活动页」锁——最新打开的页面夺锁，其他页面自动转为被动（停止轮询与朗读，面板里给一句提示 + 一键把老师叫过来）。

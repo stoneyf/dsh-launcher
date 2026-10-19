@@ -66,6 +66,34 @@ export async function listGitHubVersions() {
 }
 
 export const CHANGELOG = `
+4.5.7
+    · 模型页在 router 模式下不再显示「当前配置」标签
+      —— router 模式（LLM_ROUTER=1）下 LLM_MODEL 不参与启动（llama-server 不带 --model），
+         到底加载哪个模型由 dsh 会话 / Auto 按需 autoload；原来按文件名比对 LLM_MODEL 打这个标签，
+         会让用户以为正在跑那个模型（实测：配置写 27B-Q4、实际跑的是 35B-A3B）
+      —— 前端 gui/app.js 按 status.routerModels 判断，后端 server/main.mjs 的 listModels 同步判掉
+4.5.6
+    · 启动器不再替用户指定"默认本地模型"（把 Auto 交还给用户）
+      —— 原来 syncSettings() 每次启动都写 agent-default-model = local-llama/<当前模型>，会话一上来就拿到具体模型
+         dsh-tasks 的 Auto 适配器（provider=auto/model=auto）根本不会被问到，"Auto 作为默认"名存实亡
+      —— 同时每次启动都会覆盖掉用户在界面里显式选的模型
+      —— 现在只把"本机有哪些本地模型"写进 llm-pi-ai 的 provider 清单；默认模型仅在缺失、或指向已不存在的本地模型时
+         才补种子值 auto/auto，其余情况一律原样保留
+      —— 附带：本地挂 >30s 切 deepseek 的兜底看门狗只在默认是 local-llama 时触发，交还 Auto 后自然不再需要
+
+4.5.5
+    · 修本地视觉声明写错键名（会话带图必挂的根因）
+      —— syncSettings 写 llm-pi-ai 模型条目时用的键是 inputModalities（4.2.2 之前 llm-deepseek 私有协议时代的键）
+      —— 4.2.2 起本地模型改走 openai-completions，其 schema 只认 input；写错不报错（未知键被忽略）
+         于是运行中的 dsh 把所有本地模型当纯文本，会话一出现图片就 UNSUPPORTED_CONTENT
+      —— 现在写 input: ['text','image']，并对存量 profile 一次性做了同样的键名修正
+
+4.5.4
+    · 本地模型不再默认关掉思考：LLM_EXTRA_ARGS 默认由 '--reasoning off' 改为空
+      —— 该参数是 2026-09-24 为修 llm-deepseek 与 reasoning_content 的错配而加，本地模型早已改走 openai-completions，前提已不存在
+      —— 关掉思考会让推理型模型"不先想就收尾"（只表态、不发工具调用）；实测去掉后思考被正确摘到独立通道、工具调用照常、无失败重试
+      —— 想恢复旧行为：把 LLM_EXTRA_ARGS 填回 --reasoning off
+
 4.5.3
     · 重启 Harness 不再新开浏览器标签页
       —— 原来 restartDsh() 默认跟随 OPEN_BROWSER=1，每重启一次就多一个 dsh 标签页，旧标签页不会自己关

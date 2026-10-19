@@ -219,7 +219,7 @@ function goPage(name) {
   document.querySelectorAll('.nav-item').forEach(n => n.classList.toggle('active', n.dataset.page === name))
   document.querySelectorAll('.page').forEach(p => p.classList.toggle('active', p.id === `page-${name}`))
   if (name === 'models') {
-    loadInstalled(); renderPresets()
+    loadInstalled()
     loadDownloadBars()   // 进模型页就恢复进行中的下载条（独立成区，不受搜索影响）
     if (!hubEverSearched) hubSearch()
   }
@@ -305,6 +305,12 @@ async function restartService(svc) {
 async function loadRouterBox() {
   const box = $('#router-box')
   if (!box) return
+  // 【2026-10-19 合并】用户指出模型页同一批模型出现了两次：上面这块 router 行（加载/卸载）
+  // 和下面的「已安装模型」卡片（大小/ctx/删除）其实是一批东西。
+  // 现在加载状态与「加载/卸载」按钮**合并进卡片里**渲染，这块只负责藏起来。
+  box.classList.add('hidden')
+  box.innerHTML = ''
+  return
   const routerOn = status?.config?.LLM_ROUTER === '1'
   const llmRunning = status?.services?.llm?.running
   if (!routerOn) { box.classList.add('hidden'); return }
@@ -358,36 +364,73 @@ async function loadRouterBox() {
 async function loadInstalled() {
   try {
     const models = await api('GET', '/api/models')
+    // 【2026-10-19】router 模式下 LLM_MODEL 不再决定加载哪个模型（启动参数没 --model，
+    // 由 dsh 会话 / Auto 按需 autoload）。原来按文件名比对 LLM_MODEL 打「当前配置」标签会误导
+    // （实测：配置写 27B-Q4、实际跑的是 35B-A3B）。这里前端直接判掉，router 模式不显示该标签。
+    //
+    // 注意：status 可能还没拉回来（进模型页时 refreshStatus 未必已完成），
+    // 那就先自己取一次 —— 否则 routerMode 判成 false，标签又会冒出来。
+    if (!status || !Array.isArray(status.routerModels)) {
+      try { status = await api('GET', '/api/status') } catch { /* 取不到就按非 router 处理 */ }
+    }
+    const routerMode = Array.isArray(status?.routerModels) && status.routerModels.length > 0
     const box = $('#installed-list')
     if (models.length === 0) {
       box.innerHTML = '<div class="notice">还没有安装模型，去模型广场下载或导入本地 GGUF。</div>'
       return
     }
     box.innerHTML = ''
+    // router 模式下每个模型带「加载/卸载」，所以先把 router 状态按模型名索引起来
+    // （router 的 id 不带 .gguf 后缀，磁盘文件名带，比较时要去掉）。
+    const routerById = new Map()
+    for (const r of (status?.routerModels ?? [])) routerById.set(String(r.id).toLowerCase(), r)
     for (const m of models) {
       const card = document.createElement('div')
-      card.className = `model-card${m.active ? ' active' : ''}`
+      card.className = `model-card${m.active && !routerMode ? ' active' : ''}`
       const quant = quantOf(m.name)
+      const base = m.name.replace(/\.gguf$/i, '')
+      const rt = routerById.get(base.toLowerCase())
+      const st = rt ? (rt.status === 'loaded' ? 'loaded' : (rt.status === 'loading' ? 'loading' : 'unloaded')) : null
+      const stText = { loaded: '已加载', loading: '加载中…', unloaded: '未加载' }[st] || ''
+      const canToggle = st === 'loaded' || st === 'unloaded'
       card.innerHTML = `
         <div class="model-name">${esc(m.name)}</div>
         <div class="model-meta">
           ${quant ? `<span class="quant-tag">${esc(quant)}</span>` : ''}
           <span>${fmtBytes(m.size)}</span>
           ${m.ctx ? `<span class="ctx-tag">ctx ${m.ctx.toLocaleString()}</span>` : ''}
-          ${m.active ? '<span class="active-tag">当前配置</span>' : ''}
+          ${m.active && !routerMode ? '<span class="active-tag">当前配置</span>' : ''}
+          ${stText ? `<span class="router-state ${st}">${stText}</span>` : ''}
         </div>
         <div class="model-actions">
+          ${canToggle ? `<button class="btn btn-sm" data-act="${st === 'unloaded' ? 'load' : 'unload'}" data-id="${esc(base)}">${st === 'unloaded' ? '加载' : '卸载'}</button>` : ''}
           <button class="btn btn-sm btn-danger-ghost" data-act="delete" data-name="${esc(m.name)}">删除</button>
         </div>`
       card.addEventListener('click', async e => {
         const btn = e.target.closest('button')
         if (!btn) return
         const name = btn.dataset.name
+        const act = btn.dataset.act
         try {
-          if (btn.dataset.act === 'delete') {
+          if (act === 'delete') {
             if (!confirm(`确认删除模型 ${name}？（不可恢复）`)) return
             await api('DELETE', `/api/models/${encodeURIComponent(name)}`)
             await refreshStatus()
+            await loadInstalled()
+            return
+          }
+          if (act === 'load' || act === 'unload') {
+            btn.disabled = true
+            const id = btn.dataset.id
+            await api('POST', act === 'load' ? '/api/llm/router/load' : '/api/llm/router/unload', { model: id })
+            // 异步：llama-server 立即返回，轮询状态直到 loaded/unloaded
+            for (let i = 0; i < 30; i++) {
+              await new Promise(r => setTimeout(r, 1000))
+              await refreshStatus()
+              const now = (status?.routerModels ?? []).find(x => x.id === id)
+              const done = (act === 'load' && now?.status === 'loaded') || (act === 'unload' && now?.status === 'unloaded')
+              if (done) break
+            }
             await loadInstalled()
           }
         } catch (error) {
@@ -403,20 +446,10 @@ async function loadInstalled() {
 }
 
 function renderPresets() {
-  const presets = [
-    { label: 'Huihui-Qwen3.8-27B Q4_K（16.8GB，推荐）', url: 'https://hf-mirror.com/huihui-ai/Huihui-Qwen3.8-27B-abliterated-GGUF/resolve/main/Huihui-Qwen3.8-27B-abliterated-Q4_K.gguf' },
-    { label: 'Q3_K（13.5GB）', url: 'https://hf-mirror.com/huihui-ai/Huihui-Qwen3.8-27B-abliterated-GGUF/resolve/main/Huihui-Qwen3.8-27B-abliterated-Q3_K.gguf' },
-    { label: 'Q6_K（22.4GB）', url: 'https://hf-mirror.com/huihui-ai/Huihui-Qwen3.8-27B-abliterated-GGUF/resolve/main/Huihui-Qwen3.8-27B-abliterated-Q6_K.gguf' },
-  ]
-  const row = $('#preset-row')
-  row.innerHTML = ''
-  for (const p of presets) {
-    const btn = document.createElement('button')
-    btn.className = 'btn btn-sm'
-    btn.textContent = p.label
-    btn.addEventListener('click', () => startDownload(p.url, null, '模型下载'))
-    row.appendChild(btn)
-  }
+  // 【2026-10-19 已停用】这里原来硬编码 huihui-ai/Huihui-Qwen3.8-27B-abliterated 的三个量化
+  // 当"快捷下载"，既和模型广场的热门推荐重复（同一个仓库），指向的也不是用户现在实际在用的模型。
+  // 保留空函数只为兼容可能的调用点，实际不再渲染任何东西。
+  return
 }
 
 async function startDownload(url, dest, label) {
@@ -590,26 +623,69 @@ async function hubSearch(reset = true) {
   const q = $('#hub-query').value.trim()
   const box = $('#hub-results')
   const more = $('#btn-hub-more')
-  if (!q) return
+  // 【2026-10-19 用户要求】空查询 = **热门推荐**：HuggingFace 的
+  // /api/models?search=&sort=downloads&direction=-1 返回的就是全站按下载量排序的模型，
+  // 正好当"热门"用。输入关键词后才显示搜索结果。
   if (reset) {
     hubResults = []
     hubPage = 0
     hubHasMore = true
-    box.innerHTML = '<div class="notice">搜索中……</div>'
+    box.innerHTML = `<div class="notice">${q ? '搜索中……' : '正在获取热门模型……'}</div>`
   }
   more.classList.add('hidden')
   $('#btn-hub-search').disabled = true
   try {
-    const list = await api('GET', `/api/hub/search?q=${encodeURIComponent(q)}&page=${hubPage}`)
-    if (reset) rememberHubQuery(q)
+    // 热门（空查询）走 q=GGUF：HF 全站下载量榜被 embedding / 语音 / 视觉占满（实测 60 条里
+    // text-generation 只有 7 条、且都不是 GGUF 仓库），而搜 "GGUF" 拿到的是
+    // **按下载量排序的 GGUF 仓库**，才是这里能直接用上的东西（用户要的就是能跑的模型）。
+    let list
+    let rawCount = 0
+    if (!q) {
+      // 【2026-10-19 用户要求】"推荐不要超过10个" + "覆盖面，像 Qwen3.8 27B 已经出现太多次了"
+      // → 一次抓 3 页（60 条），按「模型家族 + 参数量」去重，凑满 10 个**不同**模型。
+      // 只抓 1 页的话，去重后往往只剩三五个。
+      const acc = []
+      for (let p = 0; p < 3; p++) {
+        try { acc.push(...(await api('GET', `/api/hub/search?q=GGUF&page=${p}`))) } catch { break }
+        if (acc.length >= 60) break
+      }
+      // 只留"能对话 / 能看图理解"的（白名单）。
+      // 之前用的是黑名单，漏了 `image-text-to-video` —— 结果 MiniMax-H3（视频生成）混进推荐里
+      // （用户 2026-10-19：「minimax不是生成视频模型？」）。反过来用白名单就不会漏。
+      const KEEP_TAGS = new Set(['text-generation', 'image-text-to-text', 'text2text-generation'])
+      const seen = new Set()
+      const uniq = []
+      for (const m of acc) {
+        if (!KEEP_TAGS.has(m.tag)) continue
+        const k = hubFamilyKey(m.id)
+        if (seen.has(k)) continue
+        seen.add(k)
+        uniq.push(m)
+        if (uniq.length >= 10) break
+      }
+      list = uniq
+      rawCount = acc.length
+    } else {
+      list = await api('GET', `/api/hub/search?q=${encodeURIComponent(q)}&page=${hubPage}`)
+      rawCount = list.length
+    }
+    if (reset && q) rememberHubQuery(q)
     if (hubPage === 0 && list.length === 0) {
-      box.innerHTML = '<div class="notice">没有结果</div>'
+      box.innerHTML = `<div class="notice">${q ? '没有结果' : '暂时拿不到热门模型列表'}</div>`
       hubEverSearched = true
       return
     }
     hubResults.push(...list)
     renderHubResults()
-    hubHasMore = list.length >= 20
+    // 顶部说明：热门 or 搜索
+    if (reset) {
+      const head = document.createElement('div')
+      head.className = 'notice'
+      head.textContent = q ? `搜索「${q}」的结果（按下载量排序）` : '🔥 热门推荐（GGUF 模型 · 按下载量排序）'
+      box.prepend(head)
+    }
+    // 热门是固定 10 条，不翻页；搜索结果才按"这页返回满 20 条"判断还有没有下一页
+    hubHasMore = q ? rawCount >= 20 : false
     if (hubHasMore) { hubPage += 1; more.classList.remove('hidden') }
     hubEverSearched = true
   } catch (error) {
@@ -619,28 +695,87 @@ async function hubSearch(reset = true) {
   $('#btn-hub-search').disabled = false
 }
 
+/**
+ * 【2026-10-19】热门推荐去重用的「模型家族键」：把同一个模型的各家再打包（unsloth / huihui-ai /
+ * HauhauCS 的 Qwen3.8-27B-* 算同一个）收成一个，避免列表被同一款模型刷屏。
+ * 规则：从展示名里找家族词（qwen/llama/gemma/deepseek/glm/phi/mistral/ornith/minimax/hunyuan…）
+ * + 参数量（如 27b），拼成 `qwen3.8-27b` 这样的键；找不到家族词就用第一个词兜底。
+ */
+function hubFamilyKey(id) {
+  const n = hubDisplayName(id).toLowerCase()
+  const fam = n.match(/(qwen[\d.]*|llama[\d.]*|gemma[\d.]*|deepseek[\w.]*|glm[\w.]*|phi[\d.]*|mistral[\w.]*|ornith[\w.]*|minimax[\w.]*|hunyuan[\w.]*|tiel[\w.]*|bonsai[\w.]*)/)
+  const size = n.match(/(\d+(?:\.\d+)?)\s*b\b/)
+  const head = fam ? fam[1] : (n.split(' ')[0] || n)
+  return head + (size ? '-' + size[1] + 'b' : '')
+}
+
+/**
+ * 【2026-10-19 用户要求】给"官方 / 知名组织"的仓库打一个标识，和第三方个人量化区分开。
+ * 判据是 owner（`owner/repo` 里的 owner），不是模型名 —— 名字可以随便起，组织账号不行。
+ * 名单只放：模型出品方 + 公认的 GGUF 大厂/主流量化方。
+ */
+const OFFICIAL_ORGS = new Set([
+  // 模型出品方
+  'qwen', 'meta-llama', 'google', 'microsoft', 'deepseek-ai', 'mistralai', 'thudm', '01-ai',
+  'baichuan-inc', 'internlm', 'moonshotai', 'minimaxai', 'zai-org', 'tencent', 'nvidia',
+  'baai', 'openai', 'allenai', 'huggingfacetb', 'ibm-granite', 'stabilityai',
+  // 公认的 GGUF 量化方
+  'ggml-org', 'unsloth', 'bartowski', 'lmstudio-community', 'thebloke', 'quantfactory',
+])
+function isOfficialRepo(id) {
+  return OFFICIAL_ORGS.has(String(id || '').split('/')[0].toLowerCase())
+}
+
+/**
+ * 【2026-10-19 用户要求】列表里**只显示模型名**，不显示 GitHub 用户和版本后缀。
+ * 例：`unsloth/Qwen3.8-27B-GGUF` → `Qwen3.8 27B`；
+ *     `huihui-ai/Huihui-Qwen3.8-27B-abliterated-GGUF` → `Huihui Qwen3.8 27B abliterated`。
+ * 完整仓库 id 仍保留在 title 提示里（鼠标悬停可见），下载/详情不受影响。
+ */
+function hubDisplayName(id) {
+  let s = String(id || '')
+  const slash = s.lastIndexOf('/')
+  if (slash >= 0) s = s.slice(slash + 1)      // 去掉 owner/org
+  s = s.replace(/-gguf$/i, '')                // 去掉 -GGUF 后缀
+  s = s.replace(/[-_]+/g, ' ')                // 连字符/下划线变空格
+  return s.trim() || String(id || '')
+}
+
 function renderHubResults() {
   const box = $('#hub-results')
+  // 【2026-10-19】详情面板会被插到"被点的那张卡"下面（原来固定在列表最末尾，
+  // 点哪条都得滚到页尾看详情）。它此刻可能就挂在列表中间，先摘下来，
+  // 否则下面的 innerHTML='' 会把它一起销毁，之后所有 $('#hub-files') 都取不到。
+  const panel = document.getElementById('hub-files')
+  if (panel) panel.remove()
   box.innerHTML = ''
   for (const repo of hubResults) {
     const div = document.createElement('div')
     div.className = 'hub-repo'
     const desc = repo.desc || repo.tag || '模型'
     div.innerHTML = `
-      <span class="id">${esc(repo.id)}${repo.likes ? ` <span class="meta">♥ ${fmtDownloads(repo.likes)}</span>` : ''}</span>
+      <span class="id" title="${esc(repo.id)}">${esc(hubDisplayName(repo.id))}${isOfficialRepo(repo.id) ? '<span class="hub-official">官方</span>' : ''}${repo.likes ? ` <span class="meta">♥ ${fmtDownloads(repo.likes)}</span>` : ''}</span>
+      <span class="meta hub-repo-id">${esc(repo.id)}</span>
       <span class="meta">${esc(desc)} · 下载 ${fmtDownloads(repo.downloads)} · <a href="${esc(hubMirrorUrl(repo.id))}" target="_blank" rel="noopener" class="hub-open">打开 ↗</a></span>`
     div.addEventListener('click', ev => {
       if (ev.target.closest('a')) return
-      showHubFiles(repo.id)
+      showHubFiles(repo.id, div)
     })
     box.appendChild(div)
+  }
+  // 把面板挂回去：优先挂到当前选中那张卡后面，找不到就放列表末尾
+  if (panel) {
+    const idx = hubResults.findIndex(r => r.id === hubRepo)
+    const cards = box.querySelectorAll('.hub-repo')
+    if (idx >= 0 && cards[idx]) cards[idx].after(panel)
+    else box.after(panel)
   }
 }
 
 let hubRecommend = null   // 当前仓库的硬件建议 {text, recommendedPath, levels}
 let hubModelInfo = null   // 当前仓库介绍 {intro, license}
 
-async function showHubFiles(repoId) {
+async function showHubFiles(repoId, anchorEl) {
   const panel = $('#hub-files')
   const list = $('#hub-files-list')
   const infoBox = $('#hub-model-info')
@@ -649,7 +784,11 @@ async function showHubFiles(repoId) {
   hubModelInfo = null
   $('#hub-files-title').textContent = repoId
   $('#hub-file-filter').value = ''
+  // 详情就近显示：插到**被点的那张卡下面**（2026-10-19，原来固定在列表末尾）
+  if (anchorEl && anchorEl.parentNode) anchorEl.after(panel)
   panel.classList.remove('hidden')
+  // 插进去后把它滚进视野（block:'nearest' 已经可见时不乱跳）
+  try { panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' }) } catch { /* 老浏览器忽略 */ }
   list.innerHTML = '<div class="notice">加载中……</div>'
   infoBox.innerHTML = '<div class="notice">正在获取仓库介绍与本机硬件建议……</div>'
   try {
@@ -1387,7 +1526,6 @@ async function init() {
   try {
     await refreshStatus()
     await loadInstalled()
-    renderPresets()
     loadLauncherInfo()
     loadComponentVersions()
     loadLauncherVersionsData()
@@ -1404,5 +1542,40 @@ async function init() {
   }
   setInterval(refreshStatus, 4000)
 }
+
+/**
+ * 【2026-10-19】GUI 改完**自动重载**，不用用户去按 Ctrl+R。
+ *
+ * 用户原话：「你改完自己 Ctrl+r」。可启动器窗口是 Electron 且没开调试端口，
+ * 外部没法让它刷新；那就让它自己发现文件变了就重载。
+ *
+ * 服务端的静态文件**不带 Last-Modified / ETag**（实测响应头只有 Content-Type），
+ * 所以没法用条件请求，只能"每 N 秒重新取一份 app.js 比对内容"（本地应用，代价可忽略）。
+ * 内容变了 → location.reload()。首次取到只记基线，不触发。
+ */
+const GUI_WATCH_MS = 15000
+let guiWatchStamp = null
+async function guiWatchTick() {
+  try {
+    let stamp = ''
+    // app.js 和 styles.css 都盯（只盯 js 的话，纯样式改动不会触发重载）
+    for (const f of ['/app.js', '/styles.css', '/index.html']) {
+      const r = await fetch(`${f}?_=${Date.now()}`, { cache: 'no-store' })
+      if (!r.ok) return
+      const text = await r.text()
+      let hash = 0
+      for (let i = 0; i < text.length; i++) hash = (hash * 31 + text.charCodeAt(i)) | 0
+      stamp += `${f}:${text.length}:${hash};`
+    }
+    if (guiWatchStamp === null) { guiWatchStamp = stamp; return }
+    if (stamp !== guiWatchStamp) {
+      guiWatchStamp = stamp
+      console.log('[launcher] 界面文件已更新，自动重载')
+      location.reload()
+    }
+  } catch { /* 后端短暂不可用时忽略，下一轮再试 */ }
+}
+setInterval(guiWatchTick, GUI_WATCH_MS)
+guiWatchTick()
 
 init()

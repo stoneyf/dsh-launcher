@@ -669,6 +669,11 @@ step('⑭ 4.4 features start')
   ok(/mmprojFor\(p\) !== null/.test(coreSrc), 'syncSettings 逐模型声明图像输入能力')
   ok(/!router && mmproj/.test(svcSrc), 'router 模式不传全局 --mmproj（会强加给目录里所有模型）')
   ok(/mmprojFor, syncSettings/.test(svcSrc), 'services.mjs 从 core.mjs 导入了 mmprojFor')
+  // 4.5.2：视觉声明键名必须是 `input`——harness llm-pi-ai（openai-completions 路由）模型条目 schema 只认 input；
+  // 写 inputModalities（llm-deepseek 时代遗留键）会被静默忽略 → 运行中的 dsh 把本地模型当纯文本，
+  // 会话带图必 UNSUPPORTED_CONTENT（2026-10-06 定位，10-05 首轮 VL-8B 带图失败同根因）。
+  ok(/input: \['text', 'image'\]/.test(coreSrc), 'syncSettings 用 `input` 键声明图像输入能力（llm-pi-ai 只认 input）')
+  ok(!/inputModalities:/.test(coreSrc), 'syncSettings 不再写遗留键 inputModalities（会被 llm-pi-ai 忽略）')
 
   // 漏 import 的坑（2026-10-03 实测踩到）：main.mjs 的 listModels() 用了 ctxForModel，
   // 但没从 core.mjs 导入 → try/catch 把 ReferenceError 吞掉 → /api/models 的 ctx 全是 null
@@ -755,6 +760,15 @@ step('⑭ 4.4 features start')
   await api('PUT', '/api/config', { LLM_ROUTER: '0', LLM_KV_QUANT: '' })
 }
 
+  // (r) 4.5.3：restartDsh 默认不打开浏览器标签页（用户反复被多开标签页烦到）
+  // 断言 restartDsh 传 --no-open；且不再出现 `?? cfg.OPEN_BROWSER` 这种"默认打开"写法。
+  // 2026-10-04 踩过的坑：旧写法 `openBrowser ?? cfg.OPEN_BROWSER === '1'` 把 restart
+  // 的 openBrowser 默认为 true（首次启动也开），用户说「你重启一次就多一个标签页」。
+  const svcSrc453 = readFileSync(join(here, '..', 'server', 'services.mjs'), 'utf8')
+  ok(/restartDsh/.test(svcSrc453) && /openBrowser: openBrowser === true/.test(svcSrc453),
+    'restartDsh 默认 openBrowser=false（不再无差别开浏览器）')
+  ok(!/openBrowser \?\? cfg\.OPEN_BROWSER/.test(svcSrc453),
+    '无 `openBrowser ?? cfg.OPEN_BROWSER`（旧写法会把 restart 默认设为 true）')
 console.log(`\n结果：${passed} 通过 / ${failed} 失败`)
 step(`RESULT ${passed} passed / ${failed} failed`)
 process.exit(failed === 0 ? 0 : 1)

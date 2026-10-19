@@ -12,7 +12,7 @@ import { spawnSync } from 'node:child_process'
 import { createRequire } from 'node:module'
 import net from 'node:net'
 
-export const LAUNCHER_VERSION = '4.5.3'
+export const LAUNCHER_VERSION = '4.5.7'
 
 const serverDir = dirname(fileURLToPath(import.meta.url))
 /** 根目录：默认取 server 上一级；DSH_LAUNCHER_ROOT 可覆盖（与传给 dsh 进程的同名变量一致，便于测试与外部发现）。 */
@@ -73,11 +73,13 @@ export const CONFIG_DEFAULTS = {
   LLM_ROUTER: '',
   // router 模式同时驻留的模型数上限。本机 32GB 显存一次只装得下一个 27B，故默认 1。
   LLM_ROUTER_MAX: '1',
-  // 追加给 llama-server 的额外命令行参数（空格分隔）。默认关掉思考链：
-  // 本机模型是推理模型，chat template 默认保留 reasoning，每轮回复都带
-  // reasoning_content 字段；DSH 端 llm-deepseek 按 thinking: disabled 构造
-  // 请求，两边对不上会报 "Messages expected a JSON object"。
-  LLM_EXTRA_ARGS: '--reasoning off',
+  // 追加给 llama-server 的额外命令行参数（空格分隔）。默认留空 = 保持"思考"开启。
+  // 历史：2026-09-24 这里曾是 '--reasoning off'，为修「DSH 端 llm-deepseek 按
+  // thinking: disabled 构造请求、与回传的 reasoning_content 对不上（报
+  // "Messages expected a JSON object"）」。本地模型随后已改走 openai-completions
+  // 路由（能正确处理 reasoning），该前提不存在；而关掉思考会让推理型模型
+  // "不先想就收尾"（只表态、不发工具调用）。故默认改为空。
+  LLM_EXTRA_ARGS: '',
   LLM_API_KEY: 'local',
   HUB_ALLOWLIST_ONLY: '0',
   HUB_MIRROR: 'https://hf-mirror.com',
@@ -520,7 +522,10 @@ export function syncSettings() {
         id: name.replace(/\.gguf$/i, ''),
         contextWindow: mCtx,
         maxTokens: Math.min(pMax, mCtx),
-        ...(mmprojFor(p) !== null ? { inputModalities: ['text', 'image'] } : {}),
+        // 键名必须是 `input`：harness llm-pi-ai（openai-completions 路由）模型条目 schema 只认 input，
+        // 写 inputModalities（llm-deepseek 时代遗留键）会被静默忽略 → 本地模型在运行中的 dsh 里全是纯文本
+        // （4.5.0 起每次会话带图必 UNSUPPORTED_CONTENT，2026-10-06 定位）。
+        ...(mmprojFor(p) !== null ? { input: ['text', 'image'] } : {}),
       }
     })
   } else {
@@ -529,7 +534,7 @@ export function syncSettings() {
         id,
         contextWindow: ctx,
         maxTokens: maxTok,
-        ...(mmprojFor() !== null ? { inputModalities: ['text', 'image'] } : {}),
+        ...(mmprojFor() !== null ? { input: ['text', 'image'] } : {}),
       },
     ]
   }
@@ -546,14 +551,29 @@ export function syncSettings() {
   if (existing?.config?.providers && typeof existing.config.providers === 'object') {
     piConfig.providers = { ...existing.config.providers, 'local-llama': localLlama }
   }
-  // 默认模型：单模型模式 = 当前文件；router 模式优先用它对应的那个，
-  // 不在目录里时退回列表第一个（否则 Harness 会指向一个不存在的模型名）。
-  const defaultId = router && !models.some(m => m.id === id) ? (models[0]?.id ?? id) : id
-  const selConfig = { provider: 'local-llama', model: defaultId }
-  patchProfileEntries([
-    { id: 'llm-pi-ai', name: '@deepseek-ai/dsh-llm-pi-ai', config: piConfig },
-    { id: 'agent-default-model', name: '@deepseek-ai/dsh-agent-default-model', config: selConfig },
-  ])
+  // 默认模型（4.5.6 起改）：启动器**不再替用户指定具体本地模型**。
+  // 以前每次都写 `provider: local-llama, model: <当前文件>`，带来两个坏事：
+  //   ① 把 Auto 路由架空 —— 会话一上来就拿到具体模型，dsh-tasks 的 Auto 适配器
+  //      （provider=auto/model=auto）根本不会被问到，"Auto 作为默认"名存实亡；
+  //   ② 每次启动都覆盖掉用户在界面里显式选的模型。
+  // 现在启动器只负责"告诉 Harness 本机有哪些本地模型"（上面 llm-pi-ai 的 provider 清单），
+  // 默认模型交给 Auto。仅当这一条**缺失**、或指向一个**已经不存在的本地模型**时，
+  // 才补一个种子值 `auto/auto`；其余情况（已是 auto/auto、用户显式选的云端模型、
+  // 指向一个确实存在的本地模型）一律原样保留、不覆盖。
+  const entries = [{ id: 'llm-pi-ai', name: '@deepseek-ai/dsh-llm-pi-ai', config: piConfig }]
+  const curDefault = readProfileEntry('agent-default-model')?.config
+  const hasDefault = curDefault !== null && curDefault !== undefined
+    && typeof curDefault.provider === 'string' && typeof curDefault.model === 'string'
+  const danglingLocal = hasDefault && curDefault.provider === 'local-llama'
+    && !models.some(m => m.id === curDefault.model)
+  if (!hasDefault || danglingLocal) {
+    entries.push({
+      id: 'agent-default-model',
+      name: '@deepseek-ai/dsh-agent-default-model',
+      config: { provider: 'auto', model: 'auto' },
+    })
+  }
+  patchProfileEntries(entries)
 }
 
 /** profile patch 文件（cordis.patch.yml）：0.1.7 起 Harness 配置的唯一落盘位置。 */

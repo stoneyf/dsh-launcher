@@ -23,6 +23,7 @@ import {
   DIRS, ROOT, readConfig, writeConfig, ensureDirs, logPath, modelPath, syncSettings, tcpPortBusy,
   waitPortFree, sleep, LAUNCHER_VERSION, resolveCtx, resolveMaxTokens, probeModel, setAutoStart, isAutoStart,
   estimateVram, ctxForModel,
+  isRouterMode,
 } from './core.mjs'
 import * as services from './services.mjs'
 import * as gpu from './gpu.mjs'
@@ -100,7 +101,11 @@ function readBody(req) {
 // ---------- 模型 API ----------
 
 function listModels() {
-  const active = basename(modelPath()).toLowerCase()
+  // 【2026-10-19】router 模式下 LLM_MODEL **不再决定加载哪个模型**（启动参数里没有 --model，
+  // 具体加载谁由 dsh 会话 / Auto 按需 autoload）。原来这里按文件名比对 LLM_MODEL 打「当前配置」标签，
+  // 会让用户以为正在跑那个模型（实测配置写 27B-Q4、实际跑的是 35B-A3B）—— router 模式下不再标 active。
+  const routerMode = isRouterMode()
+  const active = routerMode ? null : basename(modelPath()).toLowerCase()
   let items = []
   try {
     items = readdirSync(DIRS.models)
@@ -110,7 +115,7 @@ function listModels() {
         try { size = statSync(join(DIRS.models, name)).size } catch { /* 忽略 */ }
         let ctx = null
         try { ctx = ctxForModel(join(DIRS.models, name)) } catch { /* 忽略 */ }
-        return { name, size, active: name.toLowerCase() === active, ctx }
+        return { name, size, active: active !== null && name.toLowerCase() === active, ctx }
       })
       .sort((a, b) => a.name.localeCompare(b.name))
   } catch { /* 目录不存在 */ }
