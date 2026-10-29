@@ -31,7 +31,10 @@ Set-Location $root
 # 「manifest 变了」被误判成「无变化、跳过提交」，线上 manifest 停在旧版本、Release 白建。
 # 现在改用 Start-Process 分别重定向 stdout/stderr，退出码取进程对象的 ExitCode，稳。
 function Run-Git {
-  param([string[]]$GitArgs)
+  # 2026-10-29 修：原来没有 ValueFromRemainingArguments，PowerShell 只绑定第一个位置参数，
+  # 于是 git add/diff/tag/rev-parse 实际只收到子命令名（后面的参数全丢）——表现为
+  # 「manifest 无变化、跳过提交」「HEAD= 空串」，Release 半途失败且自检把整条提交打出来。
+  param([Parameter(ValueFromRemainingArguments = $true)][string[]]$GitArgs)
   $outFile = [IO.Path]::GetTempFileName()
   $errFile = [IO.Path]::GetTempFileName()
   try {
