@@ -3,11 +3,11 @@
  * 当前版本、最新版本检查、更新（备份+staging 验证+替换）与回滚。
  */
 import { EventEmitter } from 'node:events'
-import { existsSync, readFileSync, writeFileSync, renameSync, rmSync, mkdirSync, readdirSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync, renameSync, rmSync, mkdirSync, readdirSync, statSync, openSync, readSync, closeSync } from 'node:fs'
 import { join } from 'node:path'
 import { DIRS, ROOT, run, nodeExe, npmCli, backupDirs, logPath } from './core.mjs'
 import { downloadTo } from './downloads.mjs'
-import { fetchZipEntries, extractZip, extractTarGz } from './zip-utils.mjs'
+import { extractZip } from './zip-utils.mjs'
 import { stopDsh, stopLlm, dshStatus, llmStatus } from './services.mjs'
 import { createWriteStream } from 'node:fs'
 
@@ -132,7 +132,14 @@ async function latestLlamaRelease() {
             asset: asset.name,
             size: asset.size ?? null,
             url,
-            mirrors: [`https://gh-proxy.com/${url}`, url],
+            // 本机实测（走 DOWNLOAD_PROXY）：GitHub 直连 624KB/s > gh-proxy 370KB/s > ghproxy.net 257KB/s，
+            // 所以先直连；直连被墙/超时时再挨个换镜像。
+            mirrors: [
+              url,
+              `https://gh-proxy.com/${url}`,
+              `https://ghfast.top/${url}`,
+              `https://ghproxy.net/${url}`,
+            ],
           }
         }
       }
@@ -295,44 +302,6 @@ async function updateHarness() {
 
 // ---------- 更新：llama.cpp ----------
 
-async function tryNlcFastPath(release, staging) {
-  // 1) 下载 node-llama-cpp 平台包（npmmirror 高速）
-  const meta = await jsonFetch('https://registry.npmmirror.com/@node-llama-cpp%2Fwin-x64-cuda')
-  const version = meta['dist-tags']?.latest
-  const tarball = meta.versions?.[version]?.dist?.tarball
-  if (!version || !tarball) return false
-  emit('llama', `尝试快速路径：node-llama-cpp@${version} 提供 CUDA DLL……`)
-  const tgz = join(DIRS.logs, 'downloads', `nlc-win-x64-cuda-${version}.tgz`)
-  await downloadTo(tarball, tgz, { label: 'nlc', onProgress: t => emit('llama', `下载平台包 ${Math.round(t.downloaded / 1e6)}MB${t.total ? `/${Math.round(t.total / 1e6)}MB` : ''}`) })
-  // 2) 只提取构建元数据判断版本是否匹配
-  extractTarGz(tgz, staging, {
-    strip: 0,
-    filter: rel => rel === 'package/bins/win-x64-cuda/_nlcBuildMetadata.json',
-  })
-  const metaPath = join(staging, 'package', 'bins', 'win-x64-cuda', '_nlcBuildMetadata.json')
-  if (!existsSync(metaPath)) return false
-  const build = JSON.parse(readFileSync(metaPath, 'utf8'))
-  if (build.llamaCpp?.release !== release.tag) {
-    emit('llama', `平台包构建 ${build.llamaCpp?.release} 与最新 ${release.tag} 不一致，改用整包下载`)
-    return false
-  }
-  // 3) 提取 DLL 并分片补齐缺失文件
-  extractTarGz(tgz, staging, {
-    strip: 0,
-    filter: rel => /^package\/bins\/win-x64-cuda\/[^/]+\.(dll|lib)$/i.test(rel),
-  })
-  const dllDir = join(staging, 'package', 'bins', 'win-x64-cuda')
-  const { readdirSync } = await import('node:fs')
-  for (const name of readdirSync(dllDir)) renameSync(join(dllDir, name), join(staging, name))
-  emit('llama', '分片抓取 llama-server 可执行文件与缺失 DLL……')
-  await fetchZipEntries(release.mirrors[0], staging, {
-    existingDir: staging,
-    wanted: base => base === 'llama-server.exe' || /\.dll$/i.test(base),
-    onEntry: base => emit('llama', `获取 ${base}`),
-  })
-  return true
-}
-
 async function updateLlama() {
   const release = await latestLlamaRelease()
   const curBuild = currentLlamaBuild()
@@ -344,48 +313,70 @@ async function updateLlama() {
     emit('llama', '正在停止本地大模型……')
     await stopLlm()
   }
-  emit('llama', `最新构建：${release.tag}（${release.asset}）`)
+  const sizeText = release.size ? `，约 ${Math.round(release.size / 1e6)}MB` : ''
+  emit('llama', `最新构建：${release.tag}（${release.asset}${sizeText}）`)
+
   const staging = join(ROOT, 'llm-update')
   rmSync(staging, { recursive: true, force: true })
   mkdirSync(staging, { recursive: true })
-  let fast = false
-  try {
-    fast = await tryNlcFastPath(release, staging)
-  } catch (error) {
-    emit('llama', `快速路径失败（${error.message}），改用整包下载`)
-  }
-  if (!fast) {
-    rmSync(staging, { recursive: true, force: true })
-    mkdirSync(staging, { recursive: true })
-    emit('llama', `整包获取 ${release.asset}（分片抓取，约 ${Math.round(release.size / 1e6)}MB，请耐心等待）……`)
+
+  // 整包流式下载（curl）：每秒刷新进度、支持断点续传、自动重试，并按配置走 DOWNLOAD_PROXY。
+  // 旧逻辑是「node fetch 按 1MB Range 分片抓取」——本机实测只有 70~85KB/s，且要抓完整个文件才输出一行，
+  // 表现为「卡在安装包下载、界面完全没有进度」，已弃用。
+  const zip = join(DIRS.logs, 'downloads', release.asset)
+  const mb = n => Math.round(n / 1e6)
+  // 镜像有时不返错误码、而是把 404 页面当正文交付（curl 不加 -f 会当成成功），
+  // 所以下载完必须校验：大小对得上、且真的是 zip（头两字节 PK）。
+  const zipLooksValid = () => {
     try {
-      // 首选：Range 分片抓取全部条目（镜像支持 Range，实测可用）
-      await fetchZipEntries(release.mirrors[0], staging, {
-        existingDir: null,
-        wanted: () => true,
-        onEntry: base => emit('llama', `获取 ${base}`),
+      const size = statSync(zip).size
+      if (size < 22) return false
+      if (release.size && size !== release.size) return false
+      const fd = openSync(zip, 'r')
+      const head = Buffer.alloc(2)
+      readSync(fd, head, 0, 2, 0)
+      closeSync(fd)
+      return head.toString('latin1') === 'PK'
+    } catch { return false }
+  }
+  let lastError = null
+  let lastShown = -1
+  for (const url of release.mirrors) {
+    const host = (() => { try { return new URL(url).host } catch { return url } })()
+    try {
+      await downloadTo(url, zip, {
+        label: 'llama',
+        onProgress: t => {
+          if (t.state !== 'running') return
+          if (t.total) {
+            const pct = Math.floor((t.downloaded / t.total) * 100)
+            if (pct === lastShown) return
+            lastShown = pct
+            emit('llama', `下载 ${release.asset} ${mb(t.downloaded)}/${mb(t.total)}MB（${pct}%）· 源 ${host}`)
+          } else if (mb(t.downloaded) !== lastShown) {
+            lastShown = mb(t.downloaded)
+            emit('llama', `下载 ${release.asset} ${mb(t.downloaded)}MB · 源 ${host}`)
+          }
+        },
       })
-    } catch (rangeError) {
-      emit('llama', `分片抓取失败（${rangeError.message}），改用流式整包下载`)
-      rmSync(staging, { recursive: true, force: true })
-      mkdirSync(staging, { recursive: true })
-      const zip = join(DIRS.logs, 'downloads', release.asset)
-      let lastError = null
-      for (const url of release.mirrors) {
-        try {
-          await downloadTo(url, zip, { label: 'llama', onProgress: t => emit('llama', `下载 ${Math.round(t.downloaded / 1e6)}MB${t.total ? `/${Math.round(t.total / 1e6)}MB` : ''}`) })
-          lastError = null
-          break
-        } catch (error) {
-          lastError = error
-          emit('llama', `源 ${url} 失败：${error.message}`)
-        }
+      if (!zipLooksValid()) {
+        rmSync(zip, { force: true })
+        rmSync(`${zip}.part`, { force: true })
+        throw new Error('下载到的不是有效 zip（镜像可能返回了错误页）')
       }
-      if (lastError) throw lastError
-      emit('llama', '解压中……')
-      extractZip(zip, staging, { onEntry: rel => emit('llama', `解压 ${rel}`) })
+      lastError = null
+      break
+    } catch (error) {
+      lastError = error
+      lastShown = -1
+      // 网络中断不删 .part：换下一个源（或下次点更新）可以接着续传；只有内容不对才在上面清掉
+      emit('llama', `源 ${host} 失败：${error.message}（保留断点，换下一个源续传）`)
     }
   }
+  if (lastError) throw new Error(`下载 ${release.asset} 失败：${lastError.message}`)
+
+  emit('llama', '解压中……')
+  extractZip(zip, staging, { onEntry: rel => emit('llama', `解压 ${rel}`) })
   const verify = run(join(staging, 'llama-server.exe'), ['--version'], { cwd: staging })
   if (!verify.ok) throw new Error(`llama-server 验证失败：${verify.stderr.slice(0, 200)}`)
   emit('llama', `验证通过：${verify.stderr.split(/\r?\n/)[0] ?? ''}`)

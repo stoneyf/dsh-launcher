@@ -66,6 +66,14 @@ export async function listGitHubVersions() {
 }
 
 export const CHANGELOG = `
+4.5.8
+    · 修「更新 llama 卡在安装包下载」
+      —— 原来整包是 node fetch 按 1MB Range 分片抓 GitHub：本机实测只有 70~85KB/s，单块 90 秒超时 ×4 次重试，
+         而且要抓完整个文件才输出一行日志，界面上就是彻底卡住不动
+      —— 现在改回整包流式下载（curl）：每秒刷新「已下/总量 + 百分比 + 当前源」、断点续传、自动重试、按设置走下载代理
+      —— 下载源按序试：GitHub 直连 → gh-proxy → ghfast → ghproxy.net，失败自动换源并保留断点
+      —— 删掉「快速路径」：node-llama-cpp 构建元数据已改用自有版本号（v0.7.0），与 llama.cpp 的 b 号永远对不上，每次白下 136MB
+      —— 下载完先校验大小与 zip 头（PK），镜像把 404 页面当正文返回时不会再被当成成功
 4.5.7
     · 模型页在 router 模式下不再显示「当前配置」标签
       —— router 模式（LLM_ROUTER=1）下 LLM_MODEL 不参与启动（llama-server 不带 --model），

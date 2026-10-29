@@ -4,6 +4,14 @@
 
 ## 更新日志
 
+### 4.5.8
+- **修「更新 llama 卡在安装包下载」**：原来整包是 `node fetch` 按 1MB Range 分片抓 GitHub，本机实测只有 70~85KB/s，单块 90 秒超时 ×4 次重试，而且**抓完整个文件才输出一行日志**——界面上就是彻底卡住不动（实测 10 分钟零输出，进程一直挂在 gh-proxy 的连接上）。
+  - 现在改回**整包流式下载（curl）**：每秒刷新「已下/总量 + 百分比 + 当前源」、支持断点续传、失败自动重试，并按设置里的 `DOWNLOAD_PROXY` 走代理。
+  - 下载源按顺序试：gh-proxy → ghfast → ghproxy.net → GitHub 直连，一个源失败自动换下一个；换源前清掉坏文件，不会拿错误页当 zip。
+  - **删掉「快速路径」**：node-llama-cpp 的构建元数据已改用自有版本号（`v0.7.0`），与 llama.cpp 的 `b` 号永远对不上——每次更新先白下 136MB 再整包重来。
+  - 下载完先校验大小与 zip 头（`PK`），镜像把 404 页面当正文返回的情况不会再被当成成功。
+  - 回滚：`server/versions.mjs.bak-llamadl-20261029`。
+
 ### 4.5.7
 - **模型页在 router 模式下不再显示「当前配置」标签**：`LLM_ROUTER=1` 时 `LLM_MODEL` **不参与启动**（llama-server 命令行里没有 `--model`），到底加载哪个模型由 dsh 会话 / Auto 按需 autoload。原来模型页按文件名比对 `LLM_MODEL` 打「当前配置」标签，会让用户以为正在跑那个模型——实测配置写 `27B-Q4_K_P`、实际跑的是 `35B-A3B`。现在该标签在 router 模式下不再出现（前端 `gui/app.js` 按 `status.routerModels` 是否为空判断，`status` 未就绪时会先自己取一次；后端 `server/main.mjs` 的 `listModels()` 同步判掉）。
   - 曾试过在列表顶部加一行「当前实际加载：<模型名>」，**已按用户要求移除**（模型页保持干净）。真实模型状态改由 dsh 对话页的 `.wa-model-chip` 小标签显示（在 `dsh-whale-assistant` 插件里）。
