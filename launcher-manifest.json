@@ -1,5 +1,5 @@
 {
-  "version": "4.5.7",
-  "notes": "## 4.5.7\n\n**模型页 / 模型广场界面整理**\n\n- router 模式下模型页不再显示「当前配置」标签（原来会让用户误以为正在跑某个模型）。\n- 模型列表不再重复出现（router 状态行与已安装卡片合并成一张卡）。\n- 模型广场详情面板改为就地展开（插在被点那张卡下方），不用再滚到页尾。\n- 模型广场默认显示热门推荐（空查询 = 按下载量排序的 GGUF 仓库，固定 10 条、按模型家族去重、只保留对话类）。\n- 列表改三行式：模型名 / 完整仓库名 / 说明+下载量。\n- 新增官方 / 第三方标识（按 owner 白名单）。\n- 去掉写死的快捷下载预设行。\n- 界面文件改动后自动重载（每 15 秒比对 app.js / styles.css / index.html 内容哈希）。\n\n**自测**：test\\\\selftest.mjs 181 通过 / 0 失败。",
-  "url": "https://github.com/stoneyf/dsh-launcher/releases/download/v4.5.7/launcher-v4.5.7.zip"
+    "version":  "4.5.8",
+    "notes":  "修「更新 llama 卡在安装包下载」：整包改为流式下载（每秒进度、断点续传、走下载代理），多个下载源自动切换，下载后校验 zip 大小与文件头",
+    "url":  "https://github.com/stoneyf/dsh-launcher/releases/download/v4.5.8/launcher-v4.5.8.zip"
 }

@@ -38,7 +38,10 @@ function Run-Git {
   $outFile = [IO.Path]::GetTempFileName()
   $errFile = [IO.Path]::GetTempFileName()
   try {
-    $proc = Start-Process -FilePath 'git' -ArgumentList $GitArgs -NoNewWindow -Wait -PassThru `
+    # 2026-10-29 再修：Start-Process 拼命令行时不会给含空格的参数加引号，
+    # `commit -m "Release v4.5.8 manifest"` 会被拆成三个参数（pathspec 报错）。
+    $quotedArgs = $GitArgs | ForEach-Object { if ($_ -match "\s") { '"' + ($_ -replace '"', '\"') + '"' } else { $_ } }
+    $proc = Start-Process -FilePath 'git' -ArgumentList $quotedArgs -NoNewWindow -Wait -PassThru `
       -RedirectStandardOutput $outFile -RedirectStandardError $errFile
     $text = ([IO.File]::ReadAllText($outFile)) + ([IO.File]::ReadAllText($errFile))
     [pscustomobject]@{ Code = $proc.ExitCode; Out = $text }
