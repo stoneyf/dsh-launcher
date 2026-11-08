@@ -17,6 +17,22 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+# 2026-11-08：发版实测 `git push` 会卡在凭据管理器（GCM）的交互提示上，脚本同步等待 → 挂死。
+# 统一强制非交互；若本机 gh 已登录，则用它的 token 走 http.extraheader 推送
+# （不进 .git/config、也不会被凭据管理器拦）。
+$env:GIT_TERMINAL_PROMPT = '0'
+$env:GCM_INTERACTIVE = 'never'
+$env:GIT_ASKPASS = 'echo'
+function Get-PushAuthArgs {
+  try {
+    $t = (& gh auth token 2>$null | Select-Object -First 1)
+    if ($t -and $t.Trim().Length -gt 10) {
+      $b64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes("x-access-token:$($t.Trim())"))
+      return @('-c', 'credential.helper=', '-c', "http.https://github.com.extraheader=AUTHORIZATION: basic $b64")
+    }
+  } catch { }
+  return @()
+}
 
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
@@ -103,7 +119,7 @@ if ($r.Code -ne 0) {
   Write-Host '[publish] manifest 无变化，跳过提交'
 }
 # 先推 main（manifest 已进去），确保 release/检查更新读到的 manifest 与本次版本一致
-$r = Run-Git push origin main
+$r = Run-Git ((Get-PushAuthArgs) + @('push', 'origin', 'main'))
 if ($r.Code -ne 0) { Write-Host "[publish] 警告: git push main 失败（可稍后手动重推）`n$($r.Out)" }
 # 再打 tag（此时指向已含新 manifest 的提交）；失败必须中断，否则会出现
 # 「远程 tag 指向旧提交」的错位（历史上发生过）
@@ -127,6 +143,11 @@ if ($headManifest -notmatch ('"version"\s*:\s*"' + [regex]::Escape($ver) + '"'))
 Write-Host "[publish] 自检通过：HEAD 里的 manifest 版本已是 $ver"
 
 # ---------- 6) GitHub token ----------
+# 2026-11-08：git credential fill 会弹凭据管理器窗口并无限等待（本次发版就这样卡死过）。
+# 优先用 gh CLI 的 token（keyring，有 repo scope），取不到再退回 credential fill。
+if (-not $Token) {
+  try { $ghTok = (& gh auth token 2>$null | Select-Object -First 1); if ($ghTok) { $Token = $ghTok.Trim(); Write-Host '[publish] 使用 gh CLI 的 token' } } catch { }
+}
 if (-not $Token) {
   # 无 BOM 临时文件 + 文件重定向（部分环境下管道 stdin 带 BOM/编码问题，
   # git 会报 "refusing to work with credential missing protocol field"）
@@ -179,7 +200,7 @@ Invoke-RestMethod -Method Post -Uri "$upApi/releases/$relId/assets?name=launcher
 Write-Host "[publish] 已上传 launcher-manifest.json"
 
 # ---------- 9) 推 tag ----------
-$r = Run-Git push origin $tag
+$r = Run-Git ((Get-PushAuthArgs) + @('push', 'origin', $tag))
 if ($r.Code -ne 0) { throw "git push tag 失败（网络抖动时可手动重推）`n$($r.Out)" }
 
 Write-Host ''
