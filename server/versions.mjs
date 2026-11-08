@@ -5,15 +5,15 @@
 import { EventEmitter } from 'node:events'
 import { existsSync, readFileSync, writeFileSync, renameSync, rmSync, mkdirSync, readdirSync, statSync, openSync, readSync, closeSync } from 'node:fs'
 import { join } from 'node:path'
-import { DIRS, ROOT, run, nodeExe, npmCli, backupDirs, logPath } from './core.mjs'
-import { downloadTo } from './downloads.mjs'
+import { DIRS, ROOT, run, nodeExe, npmCli, backupDirs, logPath, readConfig } from './core.mjs'
+import { downloadTo, rankRoutes } from './downloads.mjs'
 import { extractZip } from './zip-utils.mjs'
 import { stopDsh, stopLlm, dshStatus, llmStatus } from './services.mjs'
 import { createWriteStream } from 'node:fs'
 
 export const updateEvents = new EventEmitter()
-const emit = (component, line, type = 'log') =>
-  updateEvents.emit('event', { component, type, line: String(line).slice(0, 2000), ts: Date.now() })
+const emit = (component, line, type = 'log', extra = null) =>
+  updateEvents.emit('event', { component, type, line: String(line).slice(0, 2000), ts: Date.now(), ...(extra ?? {}) })
 
 const latestCache = {}
 
@@ -114,36 +114,34 @@ async function latestHarnessVersion() {
   return { version: best, channel: bestTag }
 }
 
-async function latestLlamaRelease() {
-  const releases = await jsonFetch('https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=8')
-  const patterns = [
-    /^llama-b\d+-bin-win-cuda-13\.\d+-x64\.zip$/,
-    /^llama-b\d+-bin-win-cuda-\d+\.\d+-x64\.zip$/,
-    /^llama-b\d+-bin-win-vulkan-x64\.zip$/,
-    /^llama-b\d+-bin-win-cpu-x64\.zip$/,
-  ]
-  for (const pattern of patterns) {
-    for (const release of releases) {
-      for (const asset of release.assets ?? []) {
-        if (pattern.test(asset.name)) {
-          const url = asset.browser_download_url
-          return {
-            tag: release.tag_name,
-            asset: asset.name,
-            size: asset.size ?? null,
-            url,
-            // 本机实测（走 DOWNLOAD_PROXY）：GitHub 直连 624KB/s > gh-proxy 370KB/s > ghproxy.net 257KB/s，
-            // 所以先直连；直连被墙/超时时再挨个换镜像。
-            mirrors: [
-              url,
-              `https://gh-proxy.com/${url}`,
-              `https://ghfast.top/${url}`,
-              `https://ghproxy.net/${url}`,
-            ],
-          }
-        }
+// 2026-10-29 用户拍板：境外镜像兜底全删（ghproxy/gh-proxy/ghfast 都在境外，
+// 实测直连也不如 GitHub 本身）。只留 GitHub 直连，走直连/代理测速后择快。
+const LLAMA_ASSET_PATTERNS = [
+  /^llama-b\d+-bin-win-cuda-13\.\d+-x64\.zip$/,
+  /^llama-b\d+-bin-win-cuda-\d+\.\d+-x64\.zip$/,
+  /^llama-b\d+-bin-win-vulkan-x64\.zip$/,
+  /^llama-b\d+-bin-win-cpu-x64\.zip$/,
+]
+
+/** 从一个 release 的资产里挑出本机可用的 Windows 构建（CUDA → Vulkan → CPU 依次尝试）。
+ *  @returns {{asset:string,size:number|null,url:string,mirrors:string[]}|null} */
+function pickLlamaAsset(assets) {
+  for (const pattern of LLAMA_ASSET_PATTERNS) {
+    for (const asset of assets ?? []) {
+      if (pattern.test(asset.name)) {
+        const url = asset.browser_download_url
+        return { asset: asset.name, size: asset.size ?? null, url, mirrors: [url] }
       }
     }
+  }
+  return null
+}
+
+async function latestLlamaRelease() {
+  const releases = await jsonFetch('https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=8')
+  for (const release of releases) {
+    const hit = pickLlamaAsset(release.assets)
+    if (hit) return { ...hit, tag: release.tag_name }
   }
   throw new Error('未找到可用的 llama.cpp Windows 构建')
 }
@@ -153,6 +151,56 @@ async function latestNodeVersion() {
   const versions = index.map(e => e.version).filter(v => /^v24\./.test(v))
   versions.sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))
   return versions[versions.length - 1]
+}
+
+// ---------- 远程历史版本（切换版本用：现下现装，不再依赖本地备份） ----------
+
+const remoteCache = { at: 0, data: {} }
+const REMOTE_TTL_MS = 10 * 60 * 1000
+
+/** 列出某组件在远程可安装的历史版本（npm registry / GitHub Releases / nodejs.org）。
+ *  @param component - harness | llama | node
+ *  @param opts.refresh - 忽略 10 分钟缓存重新拉取
+ *  @returns {Promise<Array<{version:string,asset?:string,size?:number|null,url?:string}>>} 新→旧 */
+export async function remoteVersions(component, { refresh = false } = {}) {
+  if (!refresh && remoteCache.data[component] && Date.now() - remoteCache.at < REMOTE_TTL_MS) {
+    return remoteCache.data[component]
+  }
+  let data
+  if (component === 'harness') {
+    const meta = await jsonFetch('https://registry.npmmirror.com/@deepseek-ai%2Fdsh')
+    data = Object.keys(meta.versions ?? {})
+      .filter(v => /^\d+\.\d+\.\d+/.test(v))
+      .sort((a, b) => compareVersions(b.replace(/^v/, ''), a.replace(/^v/, '')))
+      .slice(0, 40)
+      .map(version => ({ version }))
+  } else if (component === 'llama') {
+    const releases = await jsonFetch('https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=30')
+    data = []
+    for (const release of releases) {
+      const hit = pickLlamaAsset(release.assets)
+      if (hit) data.push({ version: release.tag_name, asset: hit.asset, size: hit.size, url: hit.url })
+    }
+  } else if (component === 'node') {
+    // nodejs.org 在国内经常超时（index.json 1MB 左右），失败就换 npmmirror 的 node 镜像
+    const sources = ['https://nodejs.org/dist/index.json', 'https://npmmirror.com/mirrors/node/index.json']
+    let index = null
+    let lastError = null
+    for (const url of sources) {
+      try { index = await jsonFetch(url, 45000); break } catch (error) { lastError = error }
+    }
+    if (!index) throw lastError ?? new Error('取不到 Node 版本索引')
+    data = index.map(e => e.version)
+      .filter(v => /^v24\./.test(v))
+      .sort((a, b) => compareVersions(b.replace(/^v/, ''), a.replace(/^v/, '')))
+      .slice(0, 40)
+      .map(version => ({ version }))
+  } else {
+    throw new Error(`未知组件：${component}`)
+  }
+  remoteCache.data[component] = data
+  remoteCache.at = Date.now()
+  return data
 }
 
 // ---------- 汇总 ----------
@@ -225,13 +273,21 @@ export async function checkUpdate(component) {
 
 // ---------- 通用备份/替换 ----------
 
-function swapWithBackup(dirName, stagingDir, backupName) {
+/** 用 staging 替换正式目录。4.5.11 起**不再保留本地备份**（版本切换改为从 GitHub 现下现装），
+ *  被替换掉的旧目录先改名再删除；删除失败（比如 exe 被占用）就留着，不影响替换结果。 */
+function swapNoBackup(dirName, stagingDir) {
   const target = join(ROOT, dirName)
-  for (const old of backupDirs(ROOT).filter(n => n.startsWith(`${dirName === 'runtime' ? 'runtime' : dirName}-backup-`))) {
-    rmSync(join(ROOT, old), { recursive: true, force: true })
+  const old = existsSync(target) ? join(ROOT, `${dirName}-rollback-old-${Date.now()}`) : null
+  if (old) renameSync(target, old)
+  try {
+    renameSync(stagingDir, target)
+  } catch (error) {
+    if (old) renameSync(old, target)
+    throw error
   }
-  if (existsSync(target)) renameSync(target, join(ROOT, backupName))
-  renameSync(stagingDir, target)
+  if (old) {
+    try { rmSync(old, { recursive: true, force: true }) } catch { /* 被占用就先留着 */ }
+  }
 }
 
 // ---------- 更新：Harness ----------
@@ -293,11 +349,89 @@ async function updateHarness() {
   rmSync(staging, { recursive: true, force: true })
   mkdirSync(staging, { recursive: true })
   await npmInstallStaging(staging, version)
-  const current = currentHarnessVersion()
-  emit('harness', `备份旧版本 ${current} 并替换……`)
-  swapWithBackup('harness', staging, `harness-backup-${current}`)
+  emit('harness', '替换旧版本……')
+  swapNoBackup('harness', staging)
   emit('harness', '更新完成', 'done')
   return { version }
+}
+
+// ---------- 下载 llama.cpp 构建包（更新与版本切换共用） ----------
+
+/** 下载并校验 llama.cpp 的 Windows 构建 zip。
+ *  整包流式下载（curl）：进度、断点续传、自动重试、按配置走 DOWNLOAD_PROXY；
+ *  直连/代理先各拉 2MB 测速，快的优先，失败换另一条线路。
+ *  @param release - {tag, asset, size, url, mirrors}
+ *  @returns {Promise<string>} 本地 zip 路径 */
+async function downloadLlamaZip(release) {
+  mkdirSync(join(DIRS.logs, 'downloads'), { recursive: true })
+  const zip = join(DIRS.logs, 'downloads', release.asset)
+  const mb = n => Math.round(n / 1e6)
+  // 镜像有时不返错误码、而是把 404 页面当正文交付（curl 不加 -f 会当成成功），
+  // 所以下载完必须校验：大小对得上、且真的是 zip（头两字节 PK）。
+  const zipLooksValid = () => {
+    try {
+      const size = statSync(zip).size
+      if (size < 22) return false
+      if (release.size && size !== release.size) return false
+      const fd = openSync(zip, 'r')
+      const head = Buffer.alloc(2)
+      readSync(fd, head, 0, 2, 0)
+      closeSync(fd)
+      return head.toString('latin1') === 'PK'
+    } catch { return false }
+  }
+  let lastError = null
+  let lastShown = -1
+  // 用户要求（2026-10-29）：境外镜像兜底已删，只留 GitHub 直连。
+  // 但同一 URL 有「直连」和「代理」两条路——先各拉 2MB 测速，快的优先，
+  // 失败再换另一条重试（断点续传保留 .part）。
+  for (const url of release.mirrors) {
+    const host = (() => { try { return new URL(url).host } catch { return url } })()
+    let routes = []
+    try {
+      routes = await rankRoutes(url, readConfig())
+      const desc = routes.map(r => `${r.proxy ? '代理' : '直连'} ${r.speed ? (r.speed / 1024).toFixed(0) + 'KB/s' : '测速失败'}`).join(' / ')
+      emit('llama', `测速：${desc}（选择${routes[0].proxy ? '代理' : '直连'}）`)
+    } catch {
+      routes = [{ proxy: '', speed: 0 }]
+    }
+    for (const route of routes) {
+      const routeName = route.proxy ? '代理' : '直连'
+      try {
+        await downloadTo(url, zip, {
+          label: 'llama',
+          proxy: route.proxy,
+          onProgress: t => {
+            if (t.state !== 'running') return
+            if (t.total) {
+              const pct = Math.floor((t.downloaded / t.total) * 100)
+              if (pct === lastShown) return
+              lastShown = pct
+              emit('llama', `下载 ${release.asset} ${mb(t.downloaded)}/${mb(t.total)}MB（${pct}%）· ${routeName} · ${host}`, 'progress', { pct })
+            } else if (mb(t.downloaded) !== lastShown) {
+              lastShown = mb(t.downloaded)
+              emit('llama', `下载 ${release.asset} ${mb(t.downloaded)}MB · ${routeName} · ${host}`)
+            }
+          },
+        })
+        if (!zipLooksValid()) {
+          rmSync(zip, { force: true })
+          rmSync(`${zip}.part`, { force: true })
+          throw new Error('下载到的不是有效 zip（可能返回了错误页）')
+        }
+        lastError = null
+        break
+      } catch (error) {
+        lastError = error
+        lastShown = -1
+        // 网络中断不删 .part：换另一条线路（或下次点更新）可以接着续传；只有内容不对才在上面清掉
+        emit('llama', `${routeName}下载失败：${error.message}（保留断点，换另一条线路）`)
+      }
+    }
+    if (!lastError) break
+  }
+  if (lastError) throw new Error(`下载 ${release.asset} 失败：${lastError.message}`)
+  return zip
 }
 
 // ---------- 更新：llama.cpp ----------
@@ -323,57 +457,7 @@ async function updateLlama() {
   // 整包流式下载（curl）：每秒刷新进度、支持断点续传、自动重试，并按配置走 DOWNLOAD_PROXY。
   // 旧逻辑是「node fetch 按 1MB Range 分片抓取」——本机实测只有 70~85KB/s，且要抓完整个文件才输出一行，
   // 表现为「卡在安装包下载、界面完全没有进度」，已弃用。
-  const zip = join(DIRS.logs, 'downloads', release.asset)
-  const mb = n => Math.round(n / 1e6)
-  // 镜像有时不返错误码、而是把 404 页面当正文交付（curl 不加 -f 会当成成功），
-  // 所以下载完必须校验：大小对得上、且真的是 zip（头两字节 PK）。
-  const zipLooksValid = () => {
-    try {
-      const size = statSync(zip).size
-      if (size < 22) return false
-      if (release.size && size !== release.size) return false
-      const fd = openSync(zip, 'r')
-      const head = Buffer.alloc(2)
-      readSync(fd, head, 0, 2, 0)
-      closeSync(fd)
-      return head.toString('latin1') === 'PK'
-    } catch { return false }
-  }
-  let lastError = null
-  let lastShown = -1
-  for (const url of release.mirrors) {
-    const host = (() => { try { return new URL(url).host } catch { return url } })()
-    try {
-      await downloadTo(url, zip, {
-        label: 'llama',
-        onProgress: t => {
-          if (t.state !== 'running') return
-          if (t.total) {
-            const pct = Math.floor((t.downloaded / t.total) * 100)
-            if (pct === lastShown) return
-            lastShown = pct
-            emit('llama', `下载 ${release.asset} ${mb(t.downloaded)}/${mb(t.total)}MB（${pct}%）· 源 ${host}`)
-          } else if (mb(t.downloaded) !== lastShown) {
-            lastShown = mb(t.downloaded)
-            emit('llama', `下载 ${release.asset} ${mb(t.downloaded)}MB · 源 ${host}`)
-          }
-        },
-      })
-      if (!zipLooksValid()) {
-        rmSync(zip, { force: true })
-        rmSync(`${zip}.part`, { force: true })
-        throw new Error('下载到的不是有效 zip（镜像可能返回了错误页）')
-      }
-      lastError = null
-      break
-    } catch (error) {
-      lastError = error
-      lastShown = -1
-      // 网络中断不删 .part：换下一个源（或下次点更新）可以接着续传；只有内容不对才在上面清掉
-      emit('llama', `源 ${host} 失败：${error.message}（保留断点，换下一个源续传）`)
-    }
-  }
-  if (lastError) throw new Error(`下载 ${release.asset} 失败：${lastError.message}`)
+  const zip = await downloadLlamaZip(release)
 
   emit('llama', '解压中……')
   extractZip(zip, staging, { onEntry: rel => emit('llama', `解压 ${rel}`) })
@@ -381,9 +465,8 @@ async function updateLlama() {
   if (!verify.ok) throw new Error(`llama-server 验证失败：${verify.stderr.slice(0, 200)}`)
   emit('llama', `验证通过：${verify.stderr.split(/\r?\n/)[0] ?? ''}`)
   writeFileSync(join(staging, 'BUILD_ID'), release.tag + '\n', 'ascii')
-  const current = currentLlamaBuild()
-  emit('llama', `备份旧构建 ${current} 并替换……`)
-  swapWithBackup('llm', staging, `llm-backup-${current}`)
+  emit('llama', '替换旧构建……')
+  swapNoBackup('llm', staging)
   emit('llama', '更新完成', 'done')
   return { version: release.tag }
 }
@@ -391,7 +474,11 @@ async function updateLlama() {
 // ---------- 更新：内置 Node ----------
 
 async function updateNode() {
-  const { version } = await latestNodeVersion()
+  // latestNodeVersion() 返回的是版本字符串（如 v24.22.2），不是对象——
+  // 旧代码写成 `const { version } = await latestNodeVersion()`，解构字符串得到 undefined，
+  // compareVersions(undefined, cur) === 0，于是每次都误报「已是最新」，node 永远不更新。
+  const version = await latestNodeVersion()
+  if (!version) throw new Error('nodejs.org 版本索引里没有 v24.x 版本')
   if (compareVersions(version, currentNodeVersion()) <= 0) {
     const cur = currentNodeVersion()
     emit('node', `当前 ${cur} 已是最新，无需更新`, 'done')
@@ -411,14 +498,13 @@ async function updateNode() {
   const verify = run(join(staging, 'node.exe'), ['--version'], { cwd: staging })
   if (!verify.ok || !verify.stdout.trim()) throw new Error('解压后 node.exe 验证失败')
   emit('node', `验证通过：${verify.stdout.trim()}`)
-  const current = currentNodeVersion()
   const runtimeDir = DIRS.runtimeNode
-  const backupDir = join(ROOT, `runtime-backup-${current}`)
-  for (const old of backupDirs(ROOT).filter(n => n.startsWith('runtime-backup-'))) {
-    rmSync(join(ROOT, old), { recursive: true, force: true })
-  }
-  if (existsSync(runtimeDir)) renameSync(runtimeDir, backupDir)
+  const oldRuntime = existsSync(runtimeDir) ? join(ROOT, `runtime-rollback-old-${Date.now()}`) : null
+  if (oldRuntime) renameSync(runtimeDir, oldRuntime)
   renameSync(staging, runtimeDir)
+  if (oldRuntime) {
+    try { rmSync(oldRuntime, { recursive: true, force: true }) } catch { /* 被占用就先留着 */ }
+  }
   emit('node', '更新完成', 'done')
   return { version }
 }
@@ -495,8 +581,10 @@ export function componentNotes(component) {
   return COMPONENT_NOTES[component] ?? null
 }
 
-/** 列出某组件可切换的版本：当前 + 已安装的备份。 */
-export function listComponentVersions(component) {
+/** 列出某组件可切换的版本：当前 + 本地备份 + 远程历史版本。
+ *  远程版本（npm / GitHub Releases / nodejs.org）选了就现下现装，见 switchComponentVersion。
+ *  @returns {Promise<{current:string|null,options:Array,remoteError:string|null}>} */
+export async function listComponentVersions(component) {
   const s = versionSummary()
   let prefix = '', current = null
   if (component === 'harness') { prefix = 'harness-backup-'; current = s.harness.current }
@@ -513,9 +601,23 @@ export function listComponentVersions(component) {
     const version = name.slice(prefix.length)
     if (seen.has(version)) continue
     seen.add(version)
-    options.push({ version, isCurrent: false })
+    options.push({ version, isCurrent: false, local: true })
   }
-  return { current, options }
+  let remoteError = null
+  let latest = null
+  try {
+    const remote = await remoteVersions(component)
+    latest = remote[0]?.version ?? null
+    for (const item of remote) {
+      const version = String(item.version ?? '').trim()
+      if (!version || seen.has(version)) continue
+      seen.add(version)
+      options.push({ version, isCurrent: false, remote: true })
+    }
+  } catch (error) {
+    remoteError = error?.message ?? String(error)
+  }
+  return { current, options, latest, remoteError }
 }
 
 function switchToBackup(dirName, backupName) {
@@ -527,26 +629,97 @@ function switchToBackup(dirName, backupName) {
   return backupName
 }
 
-/** 切换到某组件的指定已安装版本（从备份恢复）。 */
+/** 切换到某组件的指定版本：本地有该版本的备份就直接换，没有就从远程下载安装。
+ *  4.5.11 起不再依赖本地备份——维护页「切换版本」下拉里 GitHub / npm / nodejs.org 的历史版本都能选。
+ *  @returns {Promise<{restored:string,version?:string}>} */
 export async function switchComponentVersion(component, version) {
   const v = String(version ?? '').trim()
   if (!v) throw new Error('未指定版本')
-  if (component === 'harness') {
-    if (dshStatus().running) await stopDsh()
-    return { restored: switchToBackup('harness', `harness-backup-${v}`) }
-  }
-  if (component === 'llama') {
-    if ((await llmStatus()).running) await stopLlm()
-    return { restored: switchToBackup('llm', `llm-backup-${v}`) }
-  }
-  if (component === 'node') {
-    const backup = `runtime-backup-${v}`
-    const backupPath = join(ROOT, backup)
-    if (!existsSync(backupPath)) throw new Error(`找不到该版本的备份：${backup}`)
+  const localName = component === 'harness' ? `harness-backup-${v}`
+    : component === 'llama' ? `llm-backup-${v}`
+    : component === 'node' ? `runtime-backup-${v}`
+    : null
+  if (!localName) throw new Error(`该组件不支持版本切换：${component}`)
+  if (existsSync(join(ROOT, localName))) {
+    if (component === 'harness') {
+      if (dshStatus().running) await stopDsh()
+      return { restored: switchToBackup('harness', localName) }
+    }
+    if (component === 'llama') {
+      if ((await llmStatus()).running) await stopLlm()
+      return { restored: switchToBackup('llm', localName) }
+    }
     const runtimeDir = DIRS.runtimeNode
     if (existsSync(runtimeDir)) renameSync(runtimeDir, join(ROOT, `runtime-rollback-old-${Date.now()}`))
-    renameSync(backupPath, runtimeDir)
-    return { restored: backup }
+    renameSync(join(ROOT, localName), runtimeDir)
+    return { restored: localName }
   }
-  throw new Error(`该组件不支持版本切换：${component}`)
+  return await installRemoteVersion(component, v)
+}
+
+/** 从远程下载并安装指定版本（不再保留旧版备份；失败时正式目录保持原样）。 */
+async function installRemoteVersion(component, version) {
+  if (updateRunning) throw new Error('已有更新任务进行中，请稍候。')
+  updateRunning = true
+  try {
+    if (component === 'harness') {
+      if (version === currentHarnessVersion()) throw new Error('已经是当前版本')
+      if (dshStatus().running) { emit('harness', '正在停止 Harness……'); await stopDsh() }
+      emit('harness', `从 npm 安装 ${version}……`)
+      const staging = join(ROOT, 'harness-update')
+      rmSync(staging, { recursive: true, force: true })
+      mkdirSync(staging, { recursive: true })
+      await npmInstallStaging(staging, version)
+      emit('harness', '替换旧版本……')
+      swapNoBackup('harness', staging)
+      emit('harness', `已切换到 ${version}，启动 Harness 生效`, 'done')
+      return { restored: version, version }
+    }
+    if (component === 'llama') {
+      if (version === currentLlamaBuild()) throw new Error('已经是当前版本')
+      const hit = (await remoteVersions('llama')).find(x => x.version === version)
+      if (!hit) throw new Error(`GitHub 上找不到 ${version} 的 Windows 构建`)
+      if ((await llmStatus()).running) { emit('llama', '正在停止本地大模型……'); await stopLlm() }
+      emit('llama', `下载 ${version}（${hit.asset}）……`)
+      const zip = await downloadLlamaZip({ tag: version, asset: hit.asset, size: hit.size ?? null, url: hit.url, mirrors: [hit.url] })
+      const staging = join(ROOT, 'llm-update')
+      rmSync(staging, { recursive: true, force: true })
+      mkdirSync(staging, { recursive: true })
+      emit('llama', '解压中……')
+      extractZip(zip, staging, { onEntry: rel => emit('llama', `解压 ${rel}`) })
+      const verify = run(join(staging, 'llama-server.exe'), ['--version'], { cwd: staging })
+      if (!verify.ok) throw new Error(`llama-server 验证失败：${verify.stderr.slice(0, 200)}`)
+      writeFileSync(join(staging, 'BUILD_ID'), version + '\n', 'ascii')
+      emit('llama', '替换旧构建……')
+      swapNoBackup('llm', staging)
+      emit('llama', `已切换到 ${version}`, 'done')
+      return { restored: version, version }
+    }
+    if (component === 'node') {
+      if (version === currentNodeVersion()) throw new Error('已经是当前版本')
+      emit('node', `下载 ${version}……`)
+      const staging = join(ROOT, 'runtime-update')
+      rmSync(staging, { recursive: true, force: true })
+      mkdirSync(staging, { recursive: true })
+      const zip = join(DIRS.logs, 'downloads', `node-${version}-win-x64.zip`)
+      mkdirSync(join(DIRS.logs, 'downloads'), { recursive: true })
+      await downloadTo(`https://nodejs.org/dist/${version}/node-${version}-win-x64.zip`, zip, {
+        label: 'node',
+        onProgress: t => emit('node', `下载 ${Math.round(t.downloaded / 1e6)}MB${t.total ? `/${Math.round(t.total / 1e6)}MB` : ''}`),
+      })
+      extractZip(zip, staging, { strip: 1 })
+      const verify = run(join(staging, 'node.exe'), ['--version'], { cwd: staging })
+      if (!verify.ok || !verify.stdout.trim()) throw new Error('解压后 node.exe 验证失败')
+      const runtimeDir = DIRS.runtimeNode
+      const oldRuntime = existsSync(runtimeDir) ? join(ROOT, `runtime-rollback-old-${Date.now()}`) : null
+      if (oldRuntime) renameSync(runtimeDir, oldRuntime)
+      renameSync(staging, runtimeDir)
+      if (oldRuntime) { try { rmSync(oldRuntime, { recursive: true, force: true }) } catch { /* 被占用先留着 */ } }
+      emit('node', `已切换到 ${version}`, 'done')
+      return { restored: version, version }
+    }
+    throw new Error(`该组件不支持版本切换：${component}`)
+  } finally {
+    updateRunning = false
+  }
 }

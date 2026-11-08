@@ -266,14 +266,10 @@
       <div class="section-title">启动器版本</div>
       <div class="version-row">
         <span class="name">启动器 V4</span>
-        <span class="ver">当前 <b id="launcher-version">—</b> · 最新 <b id="launcher-latest">未检查</b></span>
+        <span class="ver">当前 <b id="launcher-version">—</b></span><a class="ver-notes" href="https://github.com/stoneyf/dsh-launcher" target="_blank" rel="noopener">github.com/stoneyf/dsh-launcher ↗</a>
         <span class="msg" id="launcher-msg"></span>
         <div class="actions">
-          <button class="btn btn-sm" id="btn-launcher-check">检查更新</button>
-          <button class="btn btn-sm btn-primary" id="btn-launcher-update">更新</button>
           <select id="launcher-version-select" class="version-select" title="已安装 + GitHub 历史版本"></select>
-          <button class="btn btn-sm" id="btn-launcher-switch">切换版本</button>
-          <button class="btn btn-sm" id="btn-launcher-rollback">回滚</button>
           <button class="btn btn-sm" id="btn-launcher-restart">重启生效</button>
         </div>
       </div>
@@ -283,6 +279,7 @@
       </details>
       <div id="update-log" class="update-log hidden">
         <div class="section-title">更新日志 <button class="btn btn-ghost btn-xs" id="btn-update-log-clear">清空</button></div>
+        <div id="update-progress" class="progress-outer hidden"><div class="progress-inner"></div></div>
         <pre id="update-log-body"></pre>
       </div>
       <div class="section-title">关于</div>

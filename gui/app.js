@@ -5,6 +5,8 @@
 const token = new URLSearchParams(location.search).get('token') ?? ''
 const $ = sel => document.querySelector(sel)
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
+// 模型显示名：去掉 .gguf，和 dsh 下拉框里的模型 id 保持一致（4.5.10）
+const ggufBase = n => String(n ?? '').replace(/\.gguf$/i, '')
 
 let status = null
 let activeModel = null      // 当前激活模型文件（status.models 中 active=true 的项；主页/维护页共用）
@@ -156,8 +158,12 @@ async function refreshStatus() {
 function renderHome() {
   if (!status) return
   const { llm, dsh } = status.services
+  // 4.5.10：router 模式下 llm.model 只是启动别名，实际加载哪个模型要看 llama-server 的逐模型状态
+  const loadedRouter = (status.routerModels ?? []).filter(r => r.status === 'loaded').map(r => r.id)
   setBadge($('#badge-llm'), llm.running, llm.running ? '运行中' : '未运行')
-  $('#llm-model').textContent = llm.model
+  $('#llm-model').textContent = loadedRouter.length
+    ? loadedRouter.join(' + ')
+    : (status.routerModels ? (llm.running ? '未加载' : '未启动') : llm.model)
   $('#llm-endpoint').textContent = llm.endpoint
   $('#llm-health').textContent = llm.running ? (llm.health ? '模型已加载 ✓' : '加载中/不可用') : '—'
   setBadge($('#badge-dsh'), dsh.running, dsh.running ? '运行中' : '未运行')
@@ -199,14 +205,19 @@ function renderHome() {
   // 本地模型快捷卡片
   const quickModel = $('#quick-model')
   const quickCount = $('#quick-model-count')
-  if (quickModel) quickModel.textContent = activeModel ? activeModel.name : '未安装'
-  if (quickCount) quickCount.textContent = `${status.models.length} 个`
-  // 首启引导：无模型或服务未启动时提示步骤
+  const installedCount = (status.models ?? []).length
+  if (quickModel) {
+    quickModel.textContent = loadedRouter.length
+      ? loadedRouter.join(' + ')
+      : activeModel ? ggufBase(activeModel.name) : (installedCount ? '未加载' : '未安装')
+  }
+  if (quickCount) quickCount.textContent = `${installedCount} 个`
+  // 首启引导：没有模型文件、或服务全停时才提示（原来按 activeModel 判断，router 模式下恒为 null → 有模型也在催下载）
   const onboard = $('#home-onboard')
   const servicesOff = !status.services.llm.running && !status.services.dsh.running
-  if (!activeModel || servicesOff) {
+  if (installedCount === 0 || servicesOff) {
     const steps = []
-    if (!activeModel) steps.push('① 到「模型」页下载或导入本地模型')
+    if (installedCount === 0) steps.push('① 到「模型」页下载或导入本地模型')
     if (servicesOff) steps.push('② 点击下方「一键启动」')
     onboard.querySelector('.onboard-steps').textContent = steps.join('　')
     onboard.classList.remove('hidden')
@@ -388,13 +399,13 @@ async function loadInstalled() {
       const card = document.createElement('div')
       card.className = `model-card${m.active && !routerMode ? ' active' : ''}`
       const quant = quantOf(m.name)
-      const base = m.name.replace(/\.gguf$/i, '')
+      const base = ggufBase(m.name)
       const rt = routerById.get(base.toLowerCase())
       const st = rt ? (rt.status === 'loaded' ? 'loaded' : (rt.status === 'loading' ? 'loading' : 'unloaded')) : null
       const stText = { loaded: '已加载', loading: '加载中…', unloaded: '未加载' }[st] || ''
       const canToggle = st === 'loaded' || st === 'unloaded'
       card.innerHTML = `
-        <div class="model-name">${esc(m.name)}</div>
+        <div class="model-name" title="${esc(m.name)}">${esc(base)}</div>
         <div class="model-meta">
           ${quant ? `<span class="quant-tag">${esc(quant)}</span>` : ''}
           <span>${fmtBytes(m.size)}</span>
@@ -993,7 +1004,7 @@ function renderLauncherVersionSelect() {
   }
   for (const v of launcherVersionsData.installed ?? []) push(v, 'installed')
   for (const v of launcherVersionsData.github ?? []) push(v, 'github')
-  sel.innerHTML = opts.map(v => `<option value="${esc(v.version)}" ${v.version === launcherVersionsData.current ? 'selected' : ''}>v${esc(v.version)}${v.version === launcherVersionsData.current ? '（当前）' : v.tag === 'github' ? '（GitHub）' : ''}</option>`).join('')
+  sel.innerHTML = opts.map(v => `<option value="${esc(v.version)}" ${v.version === launcherVersionsData.current ? 'selected' : ''}>v${esc(v.version)}${v.version === launcherVersionsData.current ? '（当前）' : v.tag === 'github' ? '（下载安装）' : ''}</option>`).join('')
   sel.title = launcherVersionsData.githubError ? `GitHub 版本列表不可用：${launcherVersionsData.githubError}` : '已安装 + GitHub 历史版本'
 }
 
@@ -1150,7 +1161,11 @@ function renderMaintain() {
   } else {
     add('NVIDIA GPU', 'warn', '未检测到 NVIDIA 显卡（CPU 推理可用但较慢）')
   }
-  add('当前模型文件', activeModel ? 'ok' : 'bad', activeModel ? `${activeModel.name}（${fmtBytes(activeModel.size)}）` : '未安装，请到模型页下载')
+  const diagLoaded = (status.routerModels ?? []).filter(r => r.status === 'loaded').map(r => r.id)
+  add('当前模型文件', diagLoaded.length || activeModel ? 'ok' : ((status.models ?? []).length ? 'warn' : 'bad'),
+    diagLoaded.length ? `${diagLoaded.join(' + ')}（router 实际加载）`
+      : activeModel ? `${activeModel.name}（${fmtBytes(activeModel.size)}）`
+      : (status.models ?? []).length ? '未加载（router 模式，按需加载）' : '未安装，请到模型页下载')
   add('LLM 端口 8080', status.ports.llm && !status.services.llm.running ? 'warn' : 'ok', status.ports.llm && !status.services.llm.running ? '被其他程序占用，请在设置中更换 LLM_PORT' : status.ports.llm ? '本地大模型监听中' : '空闲')
   add('Harness 端口', status.ports.dsh && !status.services.dsh.running ? 'warn' : 'ok', status.ports.dsh && !status.services.dsh.running ? '被占用（启动时自动顺延）' : status.ports.dsh ? '监听中' : '空闲')
   add('磁盘空间', status.disk && status.disk.free > 20 * 1024 ** 3 ? 'ok' : 'warn', status.disk ? `剩余 ${fmtBytes(status.disk.free)}` : '未知')
@@ -1176,59 +1191,44 @@ function renderMaintain() {
     const cv = componentVersions[c.key]
     const notes = cv?.notes ?? null
     const verOptions = cv?.options ?? []
-    const latest = info.latest ?? (info.checkedAt ? '查询失败' : '未检查')
-    const noUpdate = info.updateAvailable === false
+    const current = info.current
+    const latest = cv?.latest ?? null
+    const hasNew = !!latest && latest !== current
     const row = document.createElement('div')
     row.className = 'version-row'
     const verSelect = verOptions.length
-      ? `<select class="version-select" data-vkey="${c.key}" ${verOptions.length === 1 ? 'disabled' : ''}>${verOptions.map(o => `<option value="${esc(o.version)}" ${o.isCurrent ? 'selected' : ''}>${esc(o.version)}${o.isCurrent ? '（当前）' : ''}</option>`).join('')}</select><button class="btn btn-sm" data-vact="switch">切换版本</button>`
-      : ''
+      ? `<select class="version-select" data-vkey="${c.key}" title="选中哪个就装哪个；本地没有的会从网络下载">${verOptions.map(o => `<option value="${esc(o.version)}" ${o.version === current ? 'selected' : ''}>${esc(o.version)}${o.version === current ? '（当前）' : o.remote ? '（下载安装）' : o.local ? '（本地备份）' : ''}</option>`).join('')}</select>`
+      : '<span class="muted">没有可切换的版本</span>'
     row.innerHTML = `
       <span class="name">${esc(c.name)}</span>
-      <span class="ver">当前 <b>${esc(info.current)}</b> · 最新 ${esc(latest)}${info.channel ? `（${esc(info.channel)}）` : ''}${noUpdate ? ' · <span class="muted">已是最新</span>' : ''}</span>
+      <span class="ver">当前 <b>${esc(current)}</b>${hasNew ? ` · <span class="ver-new">有新版本 ${esc(latest)}</span>` : ' · <span class="muted">已是最新</span>'}</span>
       ${notes ? `<a class="ver-notes" href="${esc(notes.url)}" target="_blank" rel="noopener">${esc(notes.label)} ↗</a>` : ''}
-      <span class="actions">
-        <button class="btn btn-sm" data-vact="check">检查更新</button>
-        <button class="btn btn-sm btn-primary" data-vact="update" ${noUpdate ? 'disabled' : ''}>更新</button>
-        ${verSelect}
-        <button class="btn btn-sm" data-vact="rollback" ${info.backups.length ? '' : 'disabled'}>回滚${info.backups.length ? `（${info.backups.length}）` : ''}</button>
-      </span>`
-    row.querySelectorAll('button').forEach(btn => {
-      btn.addEventListener('click', async () => {
-        if (updateBusy) return
-        const act = btn.dataset.vact
-        if (act === 'update' && !confirm(`确认更新 ${c.name}？将自动备份当前版本（正在运行的服务会先停止）。`)) return
-        if (act === 'rollback' && !confirm(`确认回滚 ${c.name} 到备份版本？`)) return
-        if (act === 'switch') {
-          const sel = row.querySelector('.version-select')
-          if (!sel || !sel.value || sel.value === info.current) { notice('请选择一个不同于当前的版本。', true); return }
-          if (!confirm(`确认把 ${c.name} 切换到 ${sel.value}？正在运行的服务会先停止。`)) return
-        }
-        updateBusy = true
-        appendUpdateLog(`[${c.name}] ${act} 开始……`)
-        try {
-          if (act === 'switch') {
-            const sel = row.querySelector('.version-select')
-            const r = await api('POST', `/api/versions/${c.key}/switch`, { version: sel.value })
-            appendUpdateLog(`[${c.name}] 已切换到 ${r.restored}，点「重启生效」`)
-          } else {
-            const r = await api('POST', `/api/update/${c.key}/${act}`)
-            if (act === 'update') {
-              // 202 异步执行：等待 SSE 的 done/error 事件结束 busy 状态
-              appendUpdateLog(`[${c.name}] 已提交，后台执行中（进度见上方日志）……`)
-              if (!r.started) updateBusy = false
-            } else {
-              appendUpdateLog(`[${c.name}] ${act} 完成${r.restored ? `（恢复自 ${r.restored}）` : ''}`)
-              updateBusy = false
-              await refreshStatus()
-            }
-          }
-          if (act !== 'update') { await refreshStatus(); await loadComponentVersions() }
-        } catch (error) {
-          appendUpdateLog(`[${c.name}] ${act} 失败：${error.message}`)
-          updateBusy = false
-        }
-      })
+      <span class="actions">${verSelect}</span>`
+    const selEl = row.querySelector('.version-select')
+    selEl?.addEventListener('change', async () => {
+      if (updateBusy) { selEl.value = current; return }
+      const target = selEl.value
+      if (!target || target === current) return
+      const opt = verOptions.find(o => o.version === target)
+      const why = opt?.remote ? '本地没有该版本，会从网络下载安装（可能几分钟）。' : ''
+      const stop = c.key === 'harness' ? 'Harness 会先停止。' : c.key === 'llama' ? '本地大模型会先停止。' : ''
+      if (!confirm(`把 ${c.name} 从 ${current} 换成 ${target}？${why}${stop}`)) { selEl.value = current; return }
+      updateBusy = true
+      selEl.disabled = true
+      appendUpdateLog(`[${c.name}] 安装 ${target} 开始……`)
+      try {
+        const r = await api('POST', `/api/versions/${c.key}/switch`, { version: target })
+        appendUpdateLog(`[${c.name}] 已安装 ${r.version ?? r.restored}，启动后生效`)
+        await refreshStatus()
+        await loadComponentVersions()
+        renderMaintain()
+      } catch (error) {
+        appendUpdateLog(`[${c.name}] 安装失败：${error.message}`)
+        selEl.value = current
+      } finally {
+        updateBusy = false
+        selEl.disabled = false
+      }
     })
     table.appendChild(row)
   }
@@ -1287,13 +1287,15 @@ async function loadLauncherInfo() {
     const cl = $('#launcher-changelog')
     if (cl) cl.textContent = info.changelog
     renderUpdateBanner()
-    const latestEl = $('#launcher-latest')
-    if (latestEl && info.latest) {
-      latestEl.textContent = info.updateAvailable ? `v${info.latest}（可更新）` : `v${info.latest}`
-      const msg = $('#launcher-msg')
-      if (msg) {
-        msg.textContent = info.updateAvailable ? (info.notes || '发现新版本') : '已是最新'
-        msg.className = 'msg ' + (info.updateAvailable ? 'err' : 'ok')
+    // 4.5.13：这一行不再显示「已是最新」，只保留 GitHub 地址；有更新时才在 msg 里提示
+    const msg = $('#launcher-msg')
+    if (msg) {
+      if (info.updateAvailable && info.latest) {
+        msg.textContent = info.notes || `发现新版本 v${info.latest}`
+        msg.className = 'msg err'
+      } else {
+        msg.textContent = ''
+        msg.className = 'msg'
       }
     }
   } catch { /* 后端不可用 */ }
@@ -1302,47 +1304,30 @@ async function loadLauncherInfo() {
 function bindLauncherUpdate() {
   const msg = $('#launcher-msg')
   const setMsg = (text, cls = '') => { msg.textContent = text; msg.className = cls ? `msg ${cls}` : 'msg' }
-  $('#btn-launcher-check').addEventListener('click', async () => {
-    setMsg('检查中……')
-    try {
-      const r = await api('POST', '/api/update/launcher/check')
-      $('#launcher-latest').textContent = r.updateAvailable ? `v${r.latest}（可更新）` : `v${r.latest}`
-      setMsg(r.updateAvailable ? (r.notes || '发现新版本') : `已是最新（v${r.current}）`, r.updateAvailable ? 'err' : 'ok')
-    } catch (e) { setMsg(e.message, 'err') }
-  })
-  $('#btn-launcher-update').addEventListener('click', async () => {
-    setMsg('更新进行中（进度见下方更新日志）……')
-    $('#update-log').classList.remove('hidden')
-    try { await api('POST', '/api/update/launcher/update') } catch (e) { setMsg(e.message, 'err') }
-  })
   // 启动自检（4.2）
   $('#btn-preflight-run')?.addEventListener('click', preflightCheck)
   $('#btn-preflight-repair')?.addEventListener('click', preflightRepair)
-  $('#btn-launcher-rollback').addEventListener('click', async () => {
-    try {
-      const r = await api('POST', '/api/update/launcher/rollback')
-      $('#update-log').classList.remove('hidden')
-      setMsg(`已恢复 ${r.restored}，点击「重启生效」`, 'ok')
-    } catch (e) { setMsg(e.message, 'err') }
-  })
   $('#btn-launcher-restart').addEventListener('click', async () => {
     setMsg('启动器正在重启，窗口将自动重载……')
     try { await api('POST', '/api/launcher/restart') } catch (e) { setMsg(`重启失败：${e.message}`, 'err') }
   })
-  $('#btn-launcher-switch').addEventListener('click', async () => {
-    const sel = $('#launcher-version-select')
-    const target = sel?.value
-    if (!target) { setMsg('没有可选版本', 'err'); return }
-    const cur = launcherInfoCache?.version ?? target
-    if (target === cur) { setMsg('已是当前版本'); return }
-    if (!confirm(`确认切换启动器到 v${target}？${launcherVersionsData?.github?.some(g => g.version === target) ? '将自动从 GitHub 下载该版本。' : ''}点「重启生效」后生效。`)) return
-    setMsg(`切换到 v${target} 进行中（进度见下方更新日志）……`)
+  // 4.5.12：版本管理只剩「下拉选哪个 = 装哪个」，检查/更新/回滚/切换按钮全部去掉
+  const sel = $('#launcher-version-select')
+  sel?.addEventListener('change', async () => {
+    const target = sel.value
+    const cur = launcherVersionsData?.current ?? launcherInfoCache?.version ?? target
+    if (!target || target === cur) { setMsg(''); return }
+    if (!confirm(`把启动器从 v${cur} 换成 v${target}？点「重启生效」后才会用新版本。`)) { sel.value = cur; return }
+    setMsg(`安装 v${target} 进行中（进度见下方更新日志）……`)
     $('#update-log').classList.remove('hidden')
     try {
       const r = await api('POST', '/api/launcher/switch', { version: target })
-      setMsg(`已切换到 v${r.version ?? target}，点击「重启生效」`, 'ok')
+      setMsg(`已安装 v${r.version ?? target}，点「重启生效」`, 'ok')
       await loadLauncherVersionsData()
-    } catch (e) { setMsg(`切换失败：${e.message}`, 'err') }
+    } catch (e) {
+      setMsg(`安装失败：${e.message}`, 'err')
+      sel.value = cur
+    }
   })
 }
 
@@ -1455,8 +1440,19 @@ function bindEvents() {
     try {
       const evt = JSON.parse(e.data)
       if (evt.type === 'log') appendUpdateLog(`[${evt.component}] ${evt.line}`)
+      if (evt.type === 'progress') {
+        appendUpdateLog(`[${evt.component}] ${evt.line}`)
+        const box = document.getElementById('update-progress')
+        if (box) {
+          box.classList.remove('hidden')
+          const inner = box.querySelector('.progress-inner')
+          if (inner) inner.style.width = `${Math.max(0, Math.min(100, Number(evt.pct) || 0))}%`
+        }
+      }
       if (evt.type === 'done') {
         appendUpdateLog(`[${evt.component}] ✓ 完成`); updateBusy = false; refreshStatus()
+        const box = document.getElementById('update-progress')
+        if (box) { box.classList.add('hidden'); const inner = box.querySelector('.progress-inner'); if (inner) inner.style.width = '0%' }
         if (evt.component === 'launcher') {
           const msg = $('#launcher-msg')
           msg.textContent = '完成，点击「重启生效」'; msg.className = 'msg ok'

@@ -471,9 +471,9 @@ route('POST', /^\/api\/update\/(harness|llama|node|launcher)\/update$/, async (r
 route('POST', /^\/api\/update\/(harness|llama|node|launcher)\/rollback$/, async (req, res, m) => {
   try { sendJson(res, 200, await versions.rollbackComponent(m[1])) } catch (error) { sendError(res, 500, error.message) }
 })
-route('GET', /^\/api\/versions\/(harness|llama|node)\/versions$/, (req, res, m) => {
+route('GET', /^\/api\/versions\/(harness|llama|node)\/versions$/, async (req, res, m) => {
   try {
-    const v = versions.listComponentVersions(m[1])
+    const v = await versions.listComponentVersions(m[1])
     sendJson(res, 200, { ...v, notes: versions.componentNotes(m[1]) })
   } catch (error) { sendError(res, 400, error.message) }
 })
@@ -603,8 +603,12 @@ export async function shutdown(reason = 'shutdown') {
   // 退出前落盘运行中的服务（任何退出原因：关窗、重启、api-quit），
   // 新实例启动时自动恢复 —— 用户退出前手动停掉的服务状态为 false，不会误拉起。
   try {
+    // dshStatus() 依赖 pid 文件；pid 文件可能被清空（见 clearPidIf 注释），再按端口占用兜底，
+    // 否则「dsh 明明在跑」却被记成 false，重启后不恢复（2026-11-05 实际发生，用户只能手动重启）。
+    let dshRunning = services.dshStatus().running === true
+    if (!dshRunning) dshRunning = services.dshPortHeld() === true
     const svc = {
-      dsh: services.dshStatus().running === true,
+      dsh: dshRunning,
       llm: (await services.llmStatus()).running === true,
     }
     if (svc.dsh || svc.llm) {

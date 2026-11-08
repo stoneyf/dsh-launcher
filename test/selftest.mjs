@@ -749,8 +749,9 @@ step('⑭ 4.4 features start')
   ok(!/'--ctx-size', String\(ctx\)/.test(svcSrc446) || /if \(!router\) args\.push\('--ctx-size', String\(ctx\)\)/.test(svcSrc446),
     '单模型模式仍显式给 -c（不给会用模型原生上限，KV 吃满显存）')
 
-  // (p) 4.4.7：KV 预算要同时受「固定余量」和「显卡 95% 上限」约束（防 97.9% 那种贴顶占用）
-  ok(/const VRAM_USAGE_RATIO = 0\.95/.test(coreSrc), '定义显存占用上限 95%')
+  // (p) 4.4.7：KV 预算要同时受「固定余量」和「显卡占用上限」约束（防 97.9% 那种贴顶占用）
+  // 2026-11-01 用户拍板把上限从 95% 降到 90%（35B 在 95% 时整卡只剩 507MiB），断言跟着改。
+  ok(/const VRAM_USAGE_RATIO = 0\.90/.test(coreSrc), '定义显存占用上限 90%')
   ok(/function kvBudgetFor\(/.test(coreSrc), 'KV 预算抽成单一真相源 kvBudgetFor()')
   ok(/Math\.min\(byMargin, byRatio\)/.test(coreSrc), 'KV 预算取「固定余量」与「95% 上限」中的更小者')
   const budgetCalls = (coreSrc.match(/kvBudgetFor\(totalVram, modelVramMiB\)/g) || []).length

@@ -275,7 +275,8 @@ select.theme-select, .version-select, .hub-file-tools select {
   background: var(--bg3); border: 1px solid var(--border); color: var(--text);
   border-radius: var(--radius-sm); padding: 7px 10px; font-size: var(--fs); font-family: inherit;
 }
-.version-select { padding: 5px 8px; font-size: var(--fs-sm); max-width: 150px; }
+.version-select { padding: 5px 8px; font-size: var(--fs-sm); max-width: 230px; }
+.version-row .ver-new { color: var(--yellow); font-weight: 600; }
 .hub-file-tools select { font-size: var(--fs-sm); }
 
 .settings-form { max-width: 560px; }

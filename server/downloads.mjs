@@ -112,8 +112,12 @@ export function curlText(url, { proxy = '', head = false, timeoutSec = 12 } = {}
 
 /**
  * 决定某个下载 URL 该用哪个代理（返回 '' = 直连）。
- * 中国镜像主机（默认 HUB_MIRROR=hf-mirror，另可用 DIRECT_HOSTS 逗号追加）
- * 直连比绕海外代理快得多，故绕过代理；其余主机走 DOWNLOAD_PROXY。
+ * 中国镜像（hf-mirror 等）直连更快，GitHub 相关域名走代理（国内直连 GitHub
+ * 大文件经常被掐断，exit 56），但 GitHub 发布页/asset 大文件（>100MB）直连
+ * 更快。按策略：
+ *   ① hf-mirror / DIRECT_HOSTS → 直连（比绕海外代理快）
+ *   ② GitHub asset / release → 直连（代理 165MB zip 频繁断连 exit 56/33/18）
+ *   ③ 其余 → 走 DOWNLOAD_PROXY
  */
 export function proxyForUrl(url, cfg) {
   const proxy = (cfg?.DOWNLOAD_PROXY ?? '').trim()
@@ -125,11 +129,72 @@ export function proxyForUrl(url, cfg) {
       .replace(/^https?:\/\//i, '').replace(/\/.*$/, '').toLowerCase()
     if (hubHost) direct.add(hubHost)
     for (const h of String(cfg?.DIRECT_HOSTS || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean)) direct.add(h)
+    // ② 直连域名：GitHub 发布页/asset（代理 165MB zip 频繁断连 exit 56/33/18）
+    //    + 国内镜像（ghproxy / gh-proxy / ghfast 走代理也只有 370KB/s，直接走镜像更快）
+    if (host === 'github.com' || host === 'githubusercontent.com') return ''
+    if (host === 'ghproxy.net' || host === 'gh-proxy.com' || host === 'ghfast.top') return ''
     for (const dh of direct) {
       if (host === dh || host.endsWith('.' + dh)) return ''
     }
   } catch { /* URL 解析失败 → 走代理 */ }
   return proxy
+}
+
+/**
+ * 用 curl 试拉一小段（默认 2MB）测速，返回字节/秒；拿不到返回 0。
+ * 用途：同一 URL 比较「直连」与「代理」谁快，按用户要求择快下载、失败再换另一条。
+ */
+export function probeSpeed(url, proxy = '', { maxBytes = 2 * 1024 * 1024, timeoutSec = 20 } = {}) {
+  return new Promise(resolve => {
+    const args = ['-s', '-L', '--ssl-no-revoke', '--max-time', String(timeoutSec), '--range', `0-${maxBytes - 1}`, '-o', 'NUL', '-w', '%{speed_download}']
+    if (proxy) args.push('-x', proxy)
+    args.push(url)
+    let proc
+    try {
+      proc = spawn(curlExe(), args, { windowsHide: true })
+    } catch { return resolve(0) }
+    let out = ''
+    proc.stdout.setEncoding('utf8')
+    proc.stdout.on('data', chunk => { out += chunk })
+    proc.stderr.on('data', () => {})
+    proc.on('error', () => resolve(0))
+    proc.on('exit', code => {
+      const v = Number(String(out).trim())
+      resolve(code === 0 && Number.isFinite(v) && v > 0 ? v : 0)
+    })
+  })
+}
+
+/**
+ * 对同一 URL 比较「直连」与「代理」速度，返回按快慢排序的路由（proxy 值为 '' 表示直连）。
+ * 实测都拿不到速度时保持默认顺序（直连 → 代理），由调用方逐个尝试。
+ */
+export async function rankRoutes(url, cfg) {
+  const proxy = (cfg?.DOWNLOAD_PROXY ?? '').trim()
+  const direct = await probeSpeed(url, '')
+  const viaProxy = proxy ? await probeSpeed(url, proxy) : 0
+  const routes = [{ proxy: '', speed: direct }]
+  if (proxy) routes.push({ proxy, speed: viaProxy })
+  routes.sort((a, b) => b.speed - a.speed)
+  return routes
+}
+
+/**
+ * 模型下载优先国内镜像：把 huggingface.co 的直链改写成 HUB_MIRROR（默认 hf-mirror.com）。
+ * 用户要求（2026-10-29）：模型下载优先国内镜像源。其它域名原样返回。
+ */
+export function preferDomesticMirror(url, cfg) {
+  try {
+    const u = new URL(url)
+    if (!/^https?:$/.test(u.protocol)) return url
+    if (u.hostname.toLowerCase() !== 'huggingface.co') return url
+    const mirror = String(cfg?.HUB_MIRROR || 'https://hf-mirror.com').replace(/\/+$/, '')
+    if (!mirror) return url
+    const m = new URL(mirror)
+    u.protocol = m.protocol
+    u.host = m.host
+    return u.toString()
+  } catch { return url }
 }
 
 async function headTotal(url, proxy = '') {
@@ -150,7 +215,10 @@ async function headTotal(url, proxy = '') {
  * 开始（或续传）一个下载任务。
  * @param {{url: string, dest: string, label?: string}} options
  */
-export function startDownload({ url, dest, label = 'download' }) {
+export function startDownload({ url, dest, label = 'download', proxy: proxyOverride = undefined }) {
+  // 模型下载优先国内镜像：huggingface.co → HUB_MIRROR（默认 hf-mirror.com）
+  const cfg = readConfig()
+  url = preferDomesticMirror(url, cfg)
   const id = `dl-${++seq}`
   const part = `${dest}.part`
   mkdirSync(dirname(dest), { recursive: true })
@@ -185,10 +253,14 @@ export function startDownload({ url, dest, label = 'download' }) {
         emit(t)
         return
       }
-      // 中国镜像（hf-mirror 等）直连更快，proxyForUrl 自动判定是否绕过代理
-      const proxy = proxyForUrl(url, readConfig())
+      // 中国镜像（hf-mirror 等）直连更快，proxyForUrl 自动判定是否绕过代理。
+      // proxyOverride 是调用方测速后显式选定的路由（'' = 直连）。
+      const proxy = proxyOverride !== undefined ? proxyOverride : proxyForUrl(url, cfg)
       t.total = await headTotal(url, proxy)
-      const dlArgs = ['-L', '--ssl-no-revoke', '--retry', '8', '--retry-delay', '3', '-C', '-', '-o', part]
+      // --retry-all-errors：GitHub 大文件经常在传输中被掐断（curl exit 56 schannel
+      // "server closed abruptly"），默认 --retry 不重试这类错误，会直接判失败；
+      // 加上后 curl 自己会用 -C - 续传重试，配合 20 次重试足以扛过抖动。
+      const dlArgs = ['-L', '--ssl-no-revoke', '--retry', '20', '--retry-delay', '2', '--retry-all-errors', '-C', '-', '-o', part]
       if (proxy) dlArgs.push('-x', proxy)
       dlArgs.push(url)
       const proc = spawn(curlExe(), dlArgs, { stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true })
@@ -273,9 +345,9 @@ export function deleteTask(id) {
 }
 
 /** 独立下载（供版本更新等模块复用）：返回 Promise，成功 resolve(dest)。 */
-export function downloadTo(url, dest, { label = 'download', onProgress = null } = {}) {
+export function downloadTo(url, dest, { label = 'download', onProgress = null, proxy = undefined } = {}) {
   return new Promise((resolvePromise, rejectPromise) => {
-    const task = startDownload({ url, dest, label })
+    const task = startDownload({ url, dest, label, proxy })
     const settle = t => {
       if (onProgress) onProgress(t)
       if (t.state === 'done') {

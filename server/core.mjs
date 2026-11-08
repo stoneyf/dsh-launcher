@@ -12,7 +12,7 @@ import { spawnSync } from 'node:child_process'
 import { createRequire } from 'node:module'
 import net from 'node:net'
 
-export const LAUNCHER_VERSION = '4.5.8'
+export const LAUNCHER_VERSION = '4.5.18'
 
 const serverDir = dirname(fileURLToPath(import.meta.url))
 /** 根目录：默认取 server 上一级；DSH_LAUNCHER_ROOT 可覆盖（与传给 dsh 进程的同名变量一致，便于测试与外部发现）。 */
@@ -246,6 +246,15 @@ export function mmprojFor(modelArg) {
   } catch { return null }
   return best === null ? null : join(dir, best)
 }
+/** 视觉投影器（mmproj）文件大小（MiB）；没有投影器返回 0。
+ *  为什么必须算进来（2026-11-01 实测）：27B 带 mmproj 时 ctx 229376 占到 31514MiB(96.6%)，
+ *  驱动开始换页，59 t/s 掉到 22 t/s；同一 ctx 去掉 mmproj 只占 30449MiB(93.4%)，59 t/s 正常。
+ *  投影器那 0.86GB 正好越过安全线，漏算就会把 ctx 算大。 */
+function mmprojMiB(modelArg) {
+  const p = mmprojFor(modelArg)
+  if (!p) return 0
+  try { return Math.round(statSync(p).size / 1048576) } catch { return 0 }
+}
 export function llmBaseUrl() {
   const c = readConfig()
   return `http://${c.LLM_HOST}:${Number(c.LLM_PORT)}`
@@ -346,8 +355,10 @@ export function getTotalVramMiB() {
  *   ① 总显存 − 模型占用 − 固定安全余量 1024MiB；
  *   ② 总显存的 95% − 模型占用（留 5% 给桌面/浏览器/其它程序）。
  *  为什么要加 ②：实测 Qwen3-Coder-30B-A3B（24.5GB）只按 ① 算时占到了
- *  31966/32607 MiB（**97.9%**），只剩 0.6GB —— 桌面稍一用显存就有 OOM 风险。 */
-const VRAM_USAGE_RATIO = 0.95
+ *  31966/32607 MiB（**97.9%**），只剩 0.6GB —— 桌面稍一用显存就有 OOM 风险。
+ *  2026-11-01 用户拍板：95% → 90%。95% 时 35B 占 30127MiB、整卡只剩 507MiB，
+ *  光看数字就像「显存炸了」，除 ComfyUI 借卡外任何一点分配都失败。 */
+const VRAM_USAGE_RATIO = 0.90
 function kvBudgetFor(totalVram, modelVramMiB) {
   const byMargin = totalVram - modelVramMiB - 1024
   const byRatio = totalVram * VRAM_USAGE_RATIO - modelVramMiB
@@ -366,8 +377,8 @@ export function resolveCtx() {
   const totalVram = getTotalVramMiB()
   const modelBytes = existsSync(target) ? statSync(target).size : 0
   if (!probe?.kv_per_token || !totalVram || !modelBytes) return 131072  // 兜底：探测不到用 128K
-  const overheadMiB = 1536   // CUDA 上下文 + embedding + 杂项开销
-  const modelVramMiB = modelBytes / 1048576 + overheadMiB
+  const overheadMiB = 2000   // CUDA 上下文 + embedding + 计算图缓冲（实测 2.7~3.2GB，旧值 1536 偏小）
+  const modelVramMiB = modelBytes / 1048576 + mmprojMiB(target) + overheadMiB
   const kvBudgetMiB = kvBudgetFor(totalVram, modelVramMiB)
   if (kvBudgetMiB <= 0) return 8192
   const kvPerToken = probe.kv_per_token * kvQuantFactor()
@@ -387,8 +398,8 @@ export function ctxForModel(modelPath) {
   const totalVram = getTotalVramMiB()
   const modelBytes = existsSync(modelPath) ? statSync(modelPath).size : 0
   if (!probe?.kv_per_token || !totalVram || !modelBytes) return 131072  // 兜底
-  const overheadMiB = 1536
-  const modelVramMiB = modelBytes / 1048576 + overheadMiB
+  const overheadMiB = 2000   // 实测：权重+mmproj+KV 之外仍占 2.7~3.2GB（旧值 1536 偏小）
+  const modelVramMiB = modelBytes / 1048576 + mmprojMiB(modelPath) + overheadMiB
   const kvBudgetMiB = kvBudgetFor(totalVram, modelVramMiB)
   if (kvBudgetMiB <= 0) return 8192
   const kvPerToken = probe.kv_per_token * kvQuantFactor()
@@ -434,9 +445,9 @@ export function estimateVram() {
   const probe = probeModel(model)
   const ctx = resolveCtx()
   const totalVramMiB = getTotalVramMiB()
-  const overheadMiB = 1536
+  const overheadMiB = 2000
   const modelBytes = existsSync(model) ? statSync(model).size : 0
-  const modelMiB = Math.round(modelBytes / 1048576) + overheadMiB
+  const modelMiB = Math.round(modelBytes / 1048576) + mmprojMiB(model) + overheadMiB
   const kvMiB = probe?.kv_per_token
     ? Math.round(ctx * probe.kv_per_token * kvQuantFactor() / 1048576)
     : null
@@ -658,6 +669,18 @@ export function writePid(name, pid) {
 
 export function clearPid(name) {
   try { writeFileSync(pidFile(name), '', 'ascii') } catch { /* ignore */ }
+}
+
+/**
+ * 只在 pid 文件里记录的**就是**这个进程时清空。
+ * 2026-11-05 事故：旧 dsh 进程退出时无条件清空 dsh.pid，把**新**进程写进去的 pid 抹成 0 字节；
+ * 启动器随后判断「dsh 没在跑」→ 重启后不自动恢复，用户只能手动点。
+ */
+export function clearPidIf(name, pid) {
+  try {
+    const cur = readPid(name)
+    if (cur === null || (pid && Number(pid) === cur)) clearPid(name)
+  } catch { /* ignore */ }
 }
 
 /** 进程是否还活着（services.mjs 里有一份同名私有函数；core 不依赖 services，故各持一份）。 */

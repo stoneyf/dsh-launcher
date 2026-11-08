@@ -27,11 +27,18 @@ const emit = (line, type = 'log') =>
 const GH_REPO = 'stoneyf/dsh-launcher'
 const ghZipUrl = v => `https://github.com/${GH_REPO}/releases/download/v${v}/launcher-v${v}.zip`
 
-/** 从 git 凭证库取 GitHub token（私有仓库访问需要）。无凭证返回 null。 */
+/** 从 git 凭证库取 GitHub token（私有仓库访问需要）。无凭证返回 null。
+ *  必须给超时 + 禁用交互：2026-11-05 实测 `git credential fill` 卡住不返回（凭据管理器弹窗等待输入），
+ *  spawnSync 是**同步**调用 → 整个启动器后端事件循环被堵死（7610 端口能连、但任何请求都不响应，
+ *  重启续跑也因此发不出去）。所以这里超时 5s、强制非交互，失败就当没有凭证。 */
 function githubToken() {
   try {
     const r = spawnSync('git', ['credential', 'fill'], {
-      input: 'protocol=https\nhost=github.com\n', windowsHide: true, encoding: 'utf8',
+      input: 'protocol=https\nhost=github.com\n',
+      windowsHide: true,
+      encoding: 'utf8',
+      timeout: 5000,
+      env: { ...process.env, GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'never', GIT_ASKPASS: 'echo', SSH_ASKPASS: 'echo' },
     })
     for (const line of (r.stdout ?? '').split(/\r?\n/)) {
       if (line.startsWith('token=')) return line.slice(6).trim()
@@ -66,6 +73,20 @@ export async function listGitHubVersions() {
 }
 
 export const CHANGELOG = `
+4.5.9
+    · llama.cpp 更新：境外镜像兜底全删，只留 GitHub 直连
+      —— ghproxy.net / gh-proxy.com / ghfast.top 都在境外，实测直连也不如 GitHub 本身
+    · 直连 vs 代理自动测速选快
+      —— 下载前分别用直连和下载代理各拉 2MB 比速度，快的先下；失败自动换另一条线路续传
+      —— 日志会打一行「测速：直连 xxKB/s / 代理 xxKB/s（选择直连）」
+    · 更新下载加进度条：维护页更新日志上方实时填充，完成/失败自动收起
+    · 模型下载优先国内镜像：huggingface.co 链接自动改写为 HUB_MIRROR（默认 hf-mirror.com）
+    · 下载抗断线：curl 加 --retry-all-errors（默认 --retry 不重试 exit 56「server closed abruptly」，
+      GitHub 大文件传输中经常被掐断，原来会直接判失败）
+    · 修「内置 Node 永远提示已是最新、不更新」
+      —— updateNode() 把 latestNodeVersion() 返回的字符串当对象解构，拿到 undefined，
+         与当前版本比较得 0，于是每次都误报「已是最新」
+      —— 实测 v24.20.0 → v24.22.2 更新成功（旧版备份 runtime-backup-v24.20.0）
 4.5.8
     · 修「更新 llama 卡在安装包下载」
       —— 原来整包是 node fetch 按 1MB Range 分片抓 GitHub：本机实测只有 70~85KB/s，单块 90 秒超时 ×4 次重试，

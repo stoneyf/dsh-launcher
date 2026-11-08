@@ -12,7 +12,7 @@ import { createWriteStream, existsSync, readFileSync, renameSync, writeFileSync 
 import { join } from 'node:path'
 import { EventEmitter } from 'node:events'
 import {
-  DIRS, ROOT, readConfig, writePid, readPid, clearPid, logPath, logTail,
+  DIRS, ROOT, readConfig, writePid, readPid, clearPid, clearPidIf, logPath, logTail,
   nodeExe, llmBaseUrl, modelPath, modelId, mmprojPath, mmprojFor, syncSettings, killProcessTree,
   tcpPortBusy, freePortAfter, sleep, portHolderPids, waitPortFree, resolveCtx,
   isRouterMode, listGgufNames, writeLlmRun, clearLlmRun, runningLlmRun, buildLlmPreset,
@@ -225,6 +225,18 @@ export function anyServiceRunning() {
   return state.llm?.running === true || state.dsh?.running === true
 }
 
+/**
+ * dsh 端口上是否有别的进程在监听（排除启动器自己）。
+ * 用于 pid 文件不可信时判断 dsh 是否真的在跑：2026-11-05 事故里 dsh.pid 被旧进程退出时抹成
+ * 0 字节，启动器据此把状态记成 dsh=false → 重启后不自动拉起 dsh，用户只能手动点。
+ */
+export function dshPortHeld() {
+  try {
+    const port = Number(readConfig().DSH_PORT)
+    return portHolderPids(port).filter((p) => p !== process.pid).length > 0
+  } catch { return false }
+}
+
 export async function startLlm() {
   selfHeal('llm')
   if (state.llm?.running) throw new Error('本地大模型已在运行。')
@@ -305,7 +317,7 @@ export async function startLlm() {
   proc.stderr.pipe(openLog('llm.err.log'))
   proc.on('exit', () => {
     state.llm = null
-    clearPid('llm')
+    clearPidIf('llm', proc.pid)
     clearLlmRun()
   })
   state.llm = { running: true, proc }
@@ -338,7 +350,7 @@ export async function stopLlm() {
   // 清掉绕过启动器启动、pid 文件失效但仍占着端口的孤儿进程
   await killPortHolders(Number(cfg.LLM_PORT), pid).catch(() => 0)
   state.llm = null
-  clearPid('llm')
+  clearPidIf('llm', pid)
   clearLlmRun()
 }
 
@@ -603,7 +615,7 @@ export async function startDsh({ openBrowser = true, allowPortFallback = true } 
   proc.stderr.pipe(openLog('dsh.err.log'))
   proc.on('exit', () => {
     state.dsh = null
-    clearPid('dsh')
+    clearPidIf('dsh', proc.pid)
   })
   state.dsh = { running: true, proc, port }
   writePid('dsh', proc.pid)
@@ -639,7 +651,7 @@ export async function stopDsh() {
   // 清掉绕过启动器启动、pid 文件失效但仍占着端口的孤儿进程
   await killPortHolders(Number(cfg.DSH_PORT), pid).catch(() => 0)
   state.dsh = null
-  clearPid('dsh')
+  clearPidIf('dsh', pid)
 }
 
 // ---------- V3：重启编排 ----------
