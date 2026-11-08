@@ -1,5 +1,5 @@
 {
-    "version":  "4.5.8",
-    "notes":  "修「更新 llama 卡在安装包下载」：整包改为流式下载（每秒进度、断点续传、走下载代理），多个下载源自动切换，下载后校验 zip 大小与文件头",
-    "url":  "https://github.com/stoneyf/dsh-launcher/releases/download/v4.5.8/launcher-v4.5.8.zip"
+    "version":  "4.5.18",
+    "notes":  "4.5.18 修「启动器界面打不开、状态接口一直转圈」：githubToken() 用 spawnSync(\u0027git credential fill\u0027) 同步取凭证且没有超时，凭据管理器一弹窗等输入就把 Node 主线程堵死（7610 端口能连，但任何请求都不响应，「重启续跑」也发不出去）。现在加 5 秒超时 + 强制非交互（GIT_TERMINAL_PROMPT=0 / GCM_INTERACTIVE=never / GIT_ASKPASS=echo），取不到凭证就走兜底。\n\n4.5.17 修「重启后 dsh 不自动回来」：旧进程退出时无条件清空 dsh.pid，把新 pid 抹成 0 字节 → 启动器误判 dsh 没在跑。现在改为 clearPidIf（只清自己那条）+ 端口占用兜底。\n\n4.5.16 显存预算上限 95% → 90%（95% 时 35B 加载后整卡只剩 507MiB）。\n4.5.15 视觉投影器（mmproj）计入显存估算，固定开销 1536 → 2000MiB。\n4.5.9~4.5.14 累积：llama.cpp 更新改 GitHub 直连+直连/代理测速、更新下载进度条、模型下载优先国内镜像、启动器版本管理改「下拉选哪个装哪个」、新图标（闪电环绕 S）等，详见 README 更新日志。\n\n自测：181 通过 / 0 失败。",
+    "url":  "https://github.com/stoneyf/dsh-launcher/releases/download/v4.5.18/launcher-v4.5.18.zip"
 }
